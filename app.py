@@ -18,6 +18,7 @@ from graph import app, app_review
 from agents.roles import avatar_for
 from agents.client import reset_usage, usage_summary
 from export import transcript_to_markdown
+from documents import extract_text, build_grounding
 
 CAPABILITIES = ["reason", "research", "code", "write"]
 
@@ -42,6 +43,8 @@ if "approval_mode" not in st.session_state:
     st.session_state.approval_mode = False  # review/edit the plan before running
 if "pending" not in st.session_state:
     st.session_state.pending = None         # run paused awaiting plan approval
+if "doc_files" not in st.session_state:
+    st.session_state.doc_files = []         # [{"name", "text"}] grounding docs
 
 
 # --- Rendering helpers -------------------------------------------------------
@@ -167,6 +170,25 @@ with st.sidebar:
     st.subheader("📋 Plan board")
     plan_board = st.empty()
     render_plan_board(plan_board, st.session_state.plan)
+    st.divider()
+    st.subheader("📎 Grounding documents")
+    uploads = st.file_uploader(
+        "Upload files the Council should ground its work in",
+        type=["txt", "md", "pdf", "csv", "json", "py"],
+        accept_multiple_files=True,
+        help="Text/Markdown/PDF/CSV/JSON. Their relevant content is fed to the agents.",
+    )
+    if uploads is not None:
+        st.session_state.doc_files = [
+            {"name": f.name, "text": extract_text(f.name, f.getvalue())}
+            for f in uploads
+        ]
+    usable = [d for d in st.session_state.doc_files if d["text"]]
+    if usable:
+        st.caption(f"✅ {len(usable)} document(s) loaded · {sum(len(d['text']) for d in usable):,} chars")
+    elif uploads:
+        st.caption("⚠️ Could not extract text from the upload(s).")
+
     st.divider()
     with st.expander("🧠 Shared scratchpad"):
         st.text(st.session_state.scratchpad or "(empty)")
@@ -321,7 +343,13 @@ if prompt := st.chat_input("State your problem for The Council", disabled=bool(s
     seed_messages.append(user_msg)
 
     thread_id = str(uuid.uuid4())
-    initial_state = {"messages": seed_messages, "problem": prompt, "scratchpad": ""}
+    documents = build_grounding(st.session_state.doc_files, prompt)
+    initial_state = {
+        "messages": seed_messages,
+        "problem": prompt,
+        "scratchpad": "",
+        "documents": documents,
+    }
     cfg = {"configurable": {"thread_id": thread_id}, "recursion_limit": config.RECURSION_LIMIT}
 
     reset_usage()

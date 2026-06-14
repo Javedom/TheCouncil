@@ -57,7 +57,7 @@ def ready_steps(state) -> list:
     ]
 
 
-def execute_step(step, problem, transcript, scratch) -> dict:
+def execute_step(step, problem, transcript, scratch, documents="") -> dict:
     """Run a single plan step. Returns its message, resulting status and notes."""
     role = step["role"]
     phase = step["phase"]
@@ -70,20 +70,31 @@ def execute_step(step, problem, transcript, scratch) -> dict:
         system = WORKER_PROMPT.format(role=role, phase=phase, objective=step["objective"], problem=problem)
     if scratch:
         system += f"\n\n=== SHARED SCRATCHPAD (durable facts from earlier steps) ===\n{scratch}"
+    if documents:
+        system += (
+            "\n\n=== USER-PROVIDED DOCUMENTS (ground your work in these; cite them) ===\n"
+            f"{documents}"
+        )
 
     directive = f"Carry out your objective for this step: {step['objective']}"
     contents = build_contents(transcript, directive)
 
     notes: List[str] = []
     failed = False
-    if capability == "research":
+    if capability in ("research", "code"):
         # Tool use cannot be combined with structured JSON output.
-        content = safe_generate(model, system, contents, tools=[{"google_search": {}}], label=role)
+        if capability == "research":
+            tools = [{"google_search": {}}]
+            ok_reason = "Gathered current, sourced information from the web for the Council."
+        else:
+            tools = [{"code_execution": {}}]
+            ok_reason = "Wrote and ran code in a sandbox to produce and verify the result."
+        content = safe_generate(model, system, contents, tools=tools, label=role)
         if content:
-            reasoning = "Gathered current, sourced information from the web for the Council."
+            reasoning = ok_reason
         else:
             failed = True
-            reasoning = "Step failed: the research call returned no output."
+            reasoning = f"Step failed: the {capability} call returned no output."
     else:
         obj, content, reasoning, ok = generate_reasoned(
             model, system, contents, _WorkerOutput,
@@ -123,13 +134,14 @@ def worker_node(state):
     problem = state.get("problem", "")
     transcript = render_transcript(state.get("messages", []))
     scratch = state.get("scratchpad", "")
+    documents = state.get("documents", "")
 
     if len(ready) == 1:
-        results = [execute_step(ready[0], problem, transcript, scratch)]
+        results = [execute_step(ready[0], problem, transcript, scratch, documents)]
     else:
         with ThreadPoolExecutor(max_workers=min(config.MAX_PARALLEL, len(ready))) as pool:
             results = list(pool.map(
-                lambda s: execute_step(s, problem, transcript, scratch), ready
+                lambda s: execute_step(s, problem, transcript, scratch, documents), ready
             ))
     results.sort(key=lambda r: r["step_id"])  # deterministic transcript order
 

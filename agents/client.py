@@ -129,24 +129,40 @@ def build_contents(transcript: str, directive: str) -> List[types.Content]:
 
 
 def _extract_text(response) -> str:
-    """Pull text out of a response, tolerating empty/blocked candidates.
+    """Assemble usable content from a response, tolerating empty/blocked output.
 
-    Returns "" when the model produced no usable content so callers can detect
-    failure, rather than a placeholder string that would otherwise flow into the
-    transcript and the final answer as if it were a real contribution.
+    Handles plain text and tool outputs — in particular code execution, whose
+    executed code and results live in dedicated parts rather than `.text`.
+    Returns "" when nothing usable was produced so callers can detect failure
+    instead of receiving a placeholder that would pollute the transcript.
     """
-    text = getattr(response, "text", None)
-    if text:
-        return text.strip()
     try:
         cand = response.candidates[0]
         parts = getattr(cand.content, "parts", None) or []
-        joined = "".join(getattr(p, "text", "") or "" for p in parts).strip()
+        chunks = []
+        for p in parts:
+            if getattr(p, "text", None):
+                chunks.append(p.text)
+            ec = getattr(p, "executable_code", None)
+            if ec is not None and getattr(ec, "code", None):
+                lang = (getattr(ec, "language", "") or "python").lower()
+                chunks.append(f"```{lang}\n{ec.code}\n```")
+            cr = getattr(p, "code_execution_result", None)
+            if cr is not None and getattr(cr, "output", None):
+                chunks.append(f"**Execution output:**\n```\n{cr.output}\n```")
+        joined = "\n\n".join(c for c in chunks if c).strip()
         if joined:
             return joined
         reason = getattr(cand, "finish_reason", "unknown")
         print(f"[Council] Model returned no content. Finish reason: {reason}")
     except Exception as e:  # noqa: BLE001
+        # Last resort: the simple text accessor.
+        try:
+            text = getattr(response, "text", None)
+            if text:
+                return text.strip()
+        except Exception:  # noqa: BLE001
+            pass
         print(f"[Council] Could not extract text from response: {e}")
     return ""
 

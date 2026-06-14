@@ -43,6 +43,9 @@ class CouncilState(TypedDict, total=False):
     # Shared working memory the whole Council reads and writes.
     scratchpad: str
 
+    # Optional user-provided documents (grounding context), pre-formatted.
+    documents: str
+
     # The delivered answer.
     final_answer: str
     confidence: int    # synthesizer's 0-100 self-grade vs the success criteria

@@ -35,6 +35,12 @@ def synthesizer_node(state):
     transcript = render_transcript(messages)
 
     system = SYNTHESIZER_PROMPT.format(problem=problem, criteria=criteria_md)
+    documents = state.get("documents", "")
+    if documents:
+        system += (
+            "\n\n=== USER-PROVIDED DOCUMENTS (the answer must respect these) ===\n"
+            f"{documents}"
+        )
     contents = build_contents(transcript, "Deliver the Council's final answer to the user.")
 
     obj, final, reasoning, ok = generate_reasoned(

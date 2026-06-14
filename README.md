@@ -29,6 +29,16 @@ planner ─▶ worker ─▶ (more steps?) ─▶ worker ...
    appended to the plan).
 4. **Synthesizer (Exec)** — reconciles everything into one clean final answer.
 
+### Document grounding (RAG) & code execution
+
+- **Grounding documents** — upload txt/md/pdf/csv/json in the sidebar. Their
+  most relevant content (ranked by overlap with your problem, char-budgeted) is
+  injected into the agents' and synthesizer's context so answers are grounded in
+  and cite your material.
+- **Code execution** — `code`-capability steps use Gemini's built-in,
+  sandboxed code execution: the agent writes code, runs it, and the executed
+  code + output are captured into the transcript and verified by the Critic.
+
 ### Concurrent execution
 
 The planner assigns each step a `depends_on` list. Execution is **wave-based**:
