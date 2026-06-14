@@ -17,6 +17,7 @@ class PlanStep(TypedDict):
     objective: str     # what this step must accomplish
     phase: str         # phase label this step belongs to, e.g. "Research"
     capability: str    # "reason" | "research" | "code" | "write"
+    depends_on: list   # ids of steps that must finish first ([] => can run early)
     status: str        # "pending" | "done" | "failed" (UI derives "active")
 
 

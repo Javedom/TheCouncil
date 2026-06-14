@@ -21,7 +21,7 @@ from langgraph.checkpoint.memory import MemorySaver
 import config  # noqa: E402
 from state import CouncilState
 from agents.planner import planner_node
-from agents.worker import worker_node
+from agents.worker import worker_node, ready_steps
 from agents.critic import critic_node
 from agents.synthesizer import synthesizer_node
 
@@ -31,12 +31,11 @@ def route_after_planner(state):
 
 
 def route_after_worker(state):
-    # Circuit breaker: never exceed the global step budget.
+    # Circuit breaker: never exceed the global step budget. Otherwise keep
+    # running waves while any step's dependencies are satisfied.
     if state.get("steps_executed", 0) >= config.MAX_STEPS:
         return "critic"
-    if state.get("cursor", 0) < len(state.get("plan", [])):
-        return "worker"
-    return "critic"
+    return "worker" if ready_steps(state) else "critic"
 
 
 def route_after_critic(state):

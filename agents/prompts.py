@@ -30,6 +30,13 @@ For each step choose a `capability`:
 - "reason": analysis, design, planning, decision-making (default).
 
 Group steps into intuitive phases (e.g. "Research", "Analysis", "Drafting").
+
+Set dependencies with `depends_on`: list the 0-based indices of EARLIER steps a
+step truly needs first (e.g. analysis depends on research). Leave it EMPTY for
+steps that are independent — those run concurrently, which is faster. Exploit
+this: if several research angles or drafts can proceed in parallel, give them no
+dependencies on each other.
+
 Keep the plan tight and purposeful: prefer the FEWEST steps that fully solve the
 problem. Do not include a final critique or synthesis step — those happen
 automatically after your plan runs.

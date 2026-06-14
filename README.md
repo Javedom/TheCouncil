@@ -29,6 +29,15 @@ planner ─▶ worker ─▶ (more steps?) ─▶ worker ...
    appended to the plan).
 4. **Synthesizer (Exec)** — reconciles everything into one clean final answer.
 
+### Concurrent execution
+
+The planner assigns each step a `depends_on` list. Execution is **wave-based**:
+on each turn every step whose dependencies are already satisfied runs
+**concurrently** (bounded by `COUNCIL_MAX_PARALLEL`), so independent research
+angles or drafts proceed in parallel. Readiness is status-driven (a step runs
+once its prerequisites are `done`/`failed`), which also keeps the revision loop
+and circuit breakers simple and deadlock-free.
+
 ### Human-in-the-loop plan review
 
 Toggle **"✋ Review plan before running"** in the sidebar to pause the Council

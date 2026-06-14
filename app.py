@@ -260,17 +260,20 @@ if st.session_state.pending:
     if c1.button("▶️ Approve & run", type="primary", use_container_width=True):
         # Rebuild a clean plan from the edited rows.
         new_plan = []
-        for i, row in enumerate(edited):
+        for row in edited:
             role = (row.get("role") or "").strip()
             objective = (row.get("objective") or "").strip()
             if not role or not objective:
                 continue
+            idx = len(new_plan)
             new_plan.append({
-                "id": i,
+                "id": idx,
                 "role": role,
                 "objective": objective,
                 "phase": (row.get("phase") or "Execution").strip(),
                 "capability": row.get("capability") or "reason",
+                # Hand-edited plans run sequentially (each after the previous).
+                "depends_on": [idx - 1] if idx > 0 else [],
                 "status": "pending",
             })
         app_review.update_state(cfg, {"plan": new_plan, "cursor": 0})

@@ -63,12 +63,10 @@ def critic_node(state):
             "objective": rev_obj,
             "phase": config.PHASE_REVISION,
             "capability": "reason",
+            "depends_on": [],  # all prior steps are already done; runs next wave
             "status": "pending",
         })
         updates["plan"] = plan
-        # Point the worker at the new step. Only load-bearing on the MAX_STEPS
-        # early-exit path; on the normal path the cursor already sits here.
-        updates["cursor"] = len(plan) - 1
         updates["revisions"] = revisions + 1
         updates["critic_verdict"] = "revise"
         verdict_label = "↻ Revision requested"

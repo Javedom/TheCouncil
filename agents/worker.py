@@ -1,12 +1,16 @@
-"""The generic Worker node.
+"""The Worker layer — concurrent, dependency-aware execution.
 
-A single node executes whichever plan step the cursor points at, adopting that
-step's dynamic role and capability. Reasoning + content are captured separately
-so the UI can show the agent's thinking, and durable facts the step surfaces are
-appended to the shared scratchpad for later steps. The cursor and counters
-advance here. Steps that produce no model output are marked failed and flagged
-(rather than letting an error string masquerade as a real contribution).
+Execution is wave-based instead of a single cursor: on each turn the executor
+runs every plan step whose dependencies are already satisfied, in parallel
+(bounded by config.MAX_PARALLEL). Steps within a wave are independent, so they
+deliberate off the same shared transcript without seeing each other.
+
+Each step adopts its dynamic role and capability, captures reasoning + content
+separately, and appends durable facts to the shared scratchpad. Steps that
+produce no model output are marked failed and flagged rather than letting an
+error string masquerade as a real contribution.
 """
+from concurrent.futures import ThreadPoolExecutor
 from typing import List
 from pydantic import BaseModel, Field
 
@@ -43,25 +47,23 @@ def _append_notes(scratch: str, notes, role: str) -> str:
     return f"{scratch}\n{lines}" if scratch else lines
 
 
-def worker_node(state):
+def ready_steps(state) -> list:
+    """Pending steps whose dependencies have all resolved (done or failed)."""
     plan = state.get("plan", [])
-    cursor = state.get("cursor", 0)
+    resolved = {s["id"] for s in plan if s["status"] in ("done", "failed")}
+    return [
+        s for s in plan
+        if s["status"] == "pending" and all(d in resolved for d in s.get("depends_on", []))
+    ]
 
-    # Defensive guard: nothing valid to execute -> no-op advance.
-    if cursor >= len(plan):
-        return {"cursor": cursor + 1}
 
-    step = plan[cursor]
+def execute_step(step, problem, transcript, scratch) -> dict:
+    """Run a single plan step. Returns its message, resulting status and notes."""
     role = step["role"]
     phase = step["phase"]
     capability = step["capability"]
-    problem = state.get("problem", "")
-    transcript = render_transcript(state.get("messages", []))
-    scratch = state.get("scratchpad", "")
     model = _model_for(capability)
 
-    # Build the brief (research uses a tool-oriented prompt; everything else the
-    # standard worker frame). Scratchpad injection is shared across both.
     if capability == "research":
         system = RESEARCH_WORKER_PROMPT.format(role=role, phase=phase, objective=step["objective"], problem=problem)
     else:
@@ -75,8 +77,7 @@ def worker_node(state):
     notes: List[str] = []
     failed = False
     if capability == "research":
-        # Tool use cannot be combined with structured JSON output, so research
-        # steps use free-form text. Empty result == failure.
+        # Tool use cannot be combined with structured JSON output.
         content = safe_generate(model, system, contents, tools=[{"google_search": {}}], label=role)
         if content:
             reasoning = "Gathered current, sourced information from the web for the Council."
@@ -95,34 +96,59 @@ def worker_node(state):
         elif obj is not None:
             notes = obj.notes
 
-    new_plan = [dict(s) for s in plan]
     if failed:
-        new_plan[cursor]["status"] = "failed"
+        status, kind = "failed", "error"
         content = (
             f"_(System: {role} could not produce output for this step — the model "
             f"returned nothing. The Council will proceed without it.)_"
         )
-        kind = "error"
     else:
-        new_plan[cursor]["status"] = "done"
-        kind = "agent"
+        status, kind = "done", "agent"
+
+    msg = council_message(
+        role=role, content=content, kind=kind, phase=phase, reasoning=reasoning,
+        extra={"step_id": step["id"], "failed": failed},
+    )
+    return {"step_id": step["id"], "message": msg, "status": status, "notes": notes, "role": role}
+
+
+def worker_node(state):
+    """Execute one wave: all ready steps, concurrently, within the step budget."""
+    plan = state.get("plan", [])
+    budget = config.MAX_STEPS - state.get("steps_executed", 0)
+    ready = ready_steps(state)[:max(0, budget)]
+    if not ready:
+        return {}  # routing will send us to the Critic
+
+    problem = state.get("problem", "")
+    transcript = render_transcript(state.get("messages", []))
+    scratch = state.get("scratchpad", "")
+
+    if len(ready) == 1:
+        results = [execute_step(ready[0], problem, transcript, scratch)]
+    else:
+        with ThreadPoolExecutor(max_workers=min(config.MAX_PARALLEL, len(ready))) as pool:
+            results = list(pool.map(
+                lambda s: execute_step(s, problem, transcript, scratch), ready
+            ))
+    results.sort(key=lambda r: r["step_id"])  # deterministic transcript order
+
+    status_by_id = {r["step_id"]: r["status"] for r in results}
+    new_plan = [dict(s) for s in plan]
+    for s in new_plan:
+        if s["id"] in status_by_id:
+            s["status"] = status_by_id[s["id"]]
+
+    new_scratch = scratch
+    for r in results:
+        new_scratch = _append_notes(new_scratch, r["notes"], r["role"])
 
     updates = {
         "plan": new_plan,
-        "cursor": cursor + 1,
-        "phase": phase,
-        "steps_executed": state.get("steps_executed", 0) + 1,
-        "messages": [council_message(
-            role=role,
-            content=content,
-            kind=kind,
-            phase=phase,
-            reasoning=reasoning,
-            extra={"step_id": step["id"], "failed": failed},
-        )],
+        "phase": ready[0]["phase"],
+        "steps_executed": state.get("steps_executed", 0) + len(results),
+        "messages": [r["message"] for r in results],
     }
-
-    new_scratch = _append_notes(scratch, notes, role)
     if new_scratch != scratch:
         updates["scratchpad"] = new_scratch
     return updates

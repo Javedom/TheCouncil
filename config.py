@@ -32,6 +32,7 @@ MAX_STEPS = int(_env("COUNCIL_MAX_STEPS", "12"))        # total worker execution
 MAX_PLAN_STEPS = int(_env("COUNCIL_MAX_PLAN_STEPS", "6"))  # steps the planner may emit
 MAX_REVISIONS = int(_env("COUNCIL_MAX_REVISIONS", "2"))  # critique -> revise loops
 RECURSION_LIMIT = int(_env("COUNCIL_RECURSION_LIMIT", "60"))  # LangGraph safety net
+MAX_PARALLEL = int(_env("COUNCIL_MAX_PARALLEL", "4"))  # concurrent steps per wave
 
 # Retries for transient model/transport errors.
 MAX_RETRIES = int(_env("COUNCIL_MAX_RETRIES", "2"))

@@ -17,6 +17,11 @@ class _PlanStep(BaseModel):
     objective: str = Field(description="The single clear objective for this step")
     phase: str = Field(description="Named phase this step belongs to")
     capability: Literal["reason", "research", "code", "write"] = "reason"
+    depends_on: List[int] = Field(
+        default_factory=list,
+        description="0-based indices of EARLIER steps that must finish first; "
+                    "leave empty for steps that can run in parallel.",
+    )
 
 
 class _Plan(BaseModel):
@@ -32,7 +37,7 @@ def _fallback_plan(problem: str) -> _Plan:
         success_criteria=["Directly and completely addresses the user's request."],
         steps=[
             _PlanStep(role="Lead Analyst", objective="Analyze the problem and outline the solution approach.", phase="Analysis", capability="reason"),
-            _PlanStep(role="Specialist", objective="Produce the core deliverable that solves the problem.", phase="Execution", capability="reason"),
+            _PlanStep(role="Specialist", objective="Produce the core deliverable that solves the problem.", phase="Execution", capability="reason", depends_on=[0]),
         ],
     )
 
@@ -51,19 +56,27 @@ def planner_node(state):
 
     plan_steps = []
     for i, s in enumerate(steps):
+        # Keep only backward references so the dependency graph is always an
+        # acyclic DAG (no cycles, no forward/self deadlocks).
+        deps = sorted({d for d in (s.depends_on or []) if 0 <= d < i})
         plan_steps.append({
             "id": i,
             "role": s.role,
             "objective": s.objective,
             "phase": s.phase,
             "capability": s.capability,
+            "depends_on": deps,
             "status": "pending",
         })
 
     # Build a human-readable plan summary for the UI / transcript.
     criteria_md = bullets(plan.success_criteria)
+    def _dep_note(s):
+        if not s["depends_on"]:
+            return ""
+        return "  _(after " + ", ".join(f"#{d+1}" for d in s["depends_on"]) + ")_"
     roster_md = "\n".join(
-        f"{i+1}. **{s['role']}** — {s['objective']}  _(phase: {s['phase']})_"
+        f"{i+1}. **{s['role']}** — {s['objective']}  _(phase: {s['phase']})_{_dep_note(s)}"
         for i, s in enumerate(plan_steps)
     )
     summary = (
