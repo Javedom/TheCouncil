@@ -4,7 +4,7 @@ Reconciles every contribution in the transcript into one clean, complete answer
 addressed directly to the user. If synthesis itself fails, it surfaces the
 strongest real contribution rather than an empty or fabricated answer.
 """
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from langchain_core.messages import AIMessage
 
 import config
@@ -16,6 +16,7 @@ from .events import council_message
 class _Synthesis(BaseModel):
     reasoning: str
     content: str
+    confidence: int = Field(default=0, description="0-100: how confident the answer meets the success criteria")
 
 
 def _last_good_output(messages) -> str:
@@ -36,10 +37,12 @@ def synthesizer_node(state):
     system = SYNTHESIZER_PROMPT.format(problem=problem, criteria=criteria_md)
     contents = build_contents(transcript, "Deliver the Council's final answer to the user.")
 
-    _, final, reasoning, ok = generate_reasoned(
+    obj, final, reasoning, ok = generate_reasoned(
         config.SYNTH_MODEL, system, contents, _Synthesis,
         fallback_reasoning="Integrated the Council's contributions into a single answer.",
+        label="Exec",
     )
+    confidence = max(0, min(100, obj.confidence)) if (obj is not None and ok) else None
 
     if not ok or not final.strip():
         # Last resort: give the user the best real work produced, not an empty
@@ -64,9 +67,11 @@ def synthesizer_node(state):
         kind="final",
         phase=config.PHASE_SYNTHESIS,
         reasoning=reasoning,
+        extra={"confidence": confidence},
     )
     return {
         "phase": config.PHASE_SYNTHESIS,
         "final_answer": final,
+        "confidence": confidence,
         "messages": [msg],
     }

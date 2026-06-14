@@ -77,7 +77,7 @@ def worker_node(state):
     if capability == "research":
         # Tool use cannot be combined with structured JSON output, so research
         # steps use free-form text. Empty result == failure.
-        content = safe_generate(model, system, contents, tools=[{"google_search": {}}])
+        content = safe_generate(model, system, contents, tools=[{"google_search": {}}], label=role)
         if content:
             reasoning = "Gathered current, sourced information from the web for the Council."
         else:
@@ -87,6 +87,7 @@ def worker_node(state):
         obj, content, reasoning, ok = generate_reasoned(
             model, system, contents, _WorkerOutput,
             fallback_reasoning=f"Worked on: {step['objective']}",
+            label=role,
         )
         if not ok:
             failed = True

@@ -7,6 +7,7 @@ graph can keep flowing to a final answer.
 """
 import os
 import time
+import threading
 from typing import List, Optional, Type, TypeVar
 
 from google import genai
@@ -18,6 +19,65 @@ import config
 
 _client = None
 T = TypeVar("T", bound=BaseModel)
+
+# --- Usage / cost tracking --------------------------------------------------
+# A per-run log of model calls. The UI resets it before a run and reads the
+# summary afterwards. (Single-threaded execution today; revisit when parallel
+# branches land — usage would then be attached to messages instead.)
+_usage_log: list = []
+_usage_lock = threading.Lock()
+
+
+def reset_usage():
+    with _usage_lock:
+        _usage_log.clear()
+
+
+def _record_usage(label, model, response, seconds, ok):
+    inp = out = 0
+    meta = getattr(response, "usage_metadata", None)
+    if meta is not None:
+        inp = getattr(meta, "prompt_token_count", 0) or 0
+        out = getattr(meta, "candidates_token_count", 0) or 0
+    with _usage_lock:
+        _usage_log.append({
+            "label": label or "?",
+            "model": model,
+            "input_tokens": inp,
+            "output_tokens": out,
+            "seconds": seconds,
+            "ok": ok,
+        })
+
+
+def usage_summary() -> dict:
+    """Aggregate the current run's usage into totals + a per-label breakdown."""
+    import config
+    with _usage_lock:
+        log = list(_usage_log)
+    total_in = total_out = 0
+    total_cost = 0.0
+    by_label: dict = {}
+    for r in log:
+        in_p, out_p = config.price_for(r["model"])
+        cost = r["input_tokens"] / 1e6 * in_p + r["output_tokens"] / 1e6 * out_p
+        total_in += r["input_tokens"]
+        total_out += r["output_tokens"]
+        total_cost += cost
+        b = by_label.setdefault(r["label"], {"calls": 0, "input": 0, "output": 0, "cost": 0.0, "seconds": 0.0})
+        b["calls"] += 1
+        b["input"] += r["input_tokens"]
+        b["output"] += r["output_tokens"]
+        b["cost"] += cost
+        b["seconds"] += r["seconds"]
+    return {
+        "calls": len(log),
+        "input_tokens": total_in,
+        "output_tokens": total_out,
+        "total_tokens": total_in + total_out,
+        "cost": total_cost,
+        "by_label": by_label,
+    }
 
 
 def get_client():
@@ -96,6 +156,7 @@ def safe_generate(
     system_instruction: str,
     contents,
     tools: Optional[list] = None,
+    label: str = "",
 ) -> str:
     """Generate free-form text. Never raises.
 
@@ -111,8 +172,10 @@ def safe_generate(
 
     last_err = None
     for attempt in range(config.MAX_RETRIES + 1):
+        start = time.time()
         try:
             response = client.models.generate_content(model=model, contents=contents, config=cfg)
+            _record_usage(label, model, response, time.time() - start, ok=True)
             return _extract_text(response)
         except Exception as e:  # noqa: BLE001 - intentional catch-all for robustness
             last_err = e
@@ -127,6 +190,7 @@ def safe_generate_structured(
     system_instruction: str,
     contents,
     schema: Type[T],
+    label: str = "",
 ) -> Optional[T]:
     """Generate a validated pydantic object, or None if it cannot be produced."""
     client = get_client()
@@ -138,8 +202,10 @@ def safe_generate_structured(
     )
 
     for attempt in range(config.MAX_RETRIES + 1):
+        start = time.time()
         try:
             response = client.models.generate_content(model=model, contents=contents, config=cfg)
+            _record_usage(label, model, response, time.time() - start, ok=True)
             raw = _extract_text(response)
             if not raw:
                 raise ValueError("empty response")
@@ -162,6 +228,7 @@ def generate_reasoned(
     contents,
     schema: Type[T],
     fallback_reasoning: str = "",
+    label: str = "",
 ):
     """Structured {reasoning, content, ...} generation with a free-form fallback.
 
@@ -174,11 +241,11 @@ def generate_reasoned(
     by the worker and synthesizer nodes. The schema must expose ``content`` and
     ``reasoning`` fields.
     """
-    obj = safe_generate_structured(model, system_instruction, contents, schema)
+    obj = safe_generate_structured(model, system_instruction, contents, schema, label=label)
     if obj is not None and (getattr(obj, "content", "") or "").strip():
         reasoning = (getattr(obj, "reasoning", "") or "").strip() or fallback_reasoning
         return obj, obj.content, reasoning, True
-    text = safe_generate(model, system_instruction, contents)
+    text = safe_generate(model, system_instruction, contents, label=label)
     if text:
         return None, text, fallback_reasoning, True
     return None, "", fallback_reasoning, False

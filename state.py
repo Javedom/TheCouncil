@@ -44,3 +44,4 @@ class CouncilState(TypedDict, total=False):
 
     # The delivered answer.
     final_answer: str
+    confidence: int    # synthesizer's 0-100 self-grade vs the success criteria

@@ -32,7 +32,7 @@ def critic_node(state):
 
     system = CRITIC_PROMPT.format(problem=problem, criteria=criteria_md)
     contents = build_contents(transcript, "Evaluate the Council's work and return your structured verdict.")
-    critique = safe_generate_structured(config.CRITIC_MODEL, system, contents, _Critique)
+    critique = safe_generate_structured(config.CRITIC_MODEL, system, contents, _Critique, label="Critic")
 
     revisions = state.get("revisions", 0)
     budget_left = revisions < config.MAX_REVISIONS and state.get("steps_executed", 0) < config.MAX_STEPS

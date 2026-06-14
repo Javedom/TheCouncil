@@ -29,6 +29,17 @@ planner ─▶ worker ─▶ (more steps?) ─▶ worker ...
    appended to the plan).
 4. **Synthesizer (Exec)** — reconciles everything into one clean final answer.
 
+### Persistence, export & cost
+
+- **Durable checkpointer** — set `COUNCIL_DB_PATH` to a SQLite file to make
+  sessions survive restarts (falls back to in-memory if unset/unavailable).
+- **Per-agent cost & usage** — every model call's tokens are tracked; the
+  sidebar shows estimated cost broken down by agent (prices in `config.PRICING`).
+- **Confidence self-grade** — the Synthesizer scores the answer 0–100 against
+  the success criteria; shown as a 🟢/🟡/🔴 badge.
+- **Export** — download the full session (plan, contributions, reasoning, final
+  answer) as Markdown.
+
 ### Robustness
 
 The flow is built to **always terminate with an answer**:
@@ -87,4 +98,5 @@ export COUNCIL_PRO_MODEL="gemini-3-pro-preview"
 export COUNCIL_FLASH_MODEL="gemini-2.5-flash"
 export COUNCIL_MAX_STEPS=12
 export COUNCIL_MAX_REVISIONS=2
+export COUNCIL_DB_PATH="council.db"   # durable, resumable sessions
 ```

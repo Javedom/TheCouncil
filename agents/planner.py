@@ -42,7 +42,7 @@ def planner_node(state):
     transcript = render_transcript(state.get("messages", []))
     contents = build_contents(transcript, f"Plan the Council's work for this problem:\n{problem}")
 
-    plan = safe_generate_structured(config.PLANNER_MODEL, PLANNER_PROMPT, contents, _Plan)
+    plan = safe_generate_structured(config.PLANNER_MODEL, PLANNER_PROMPT, contents, _Plan, label="Planner")
     if plan is None or not plan.steps:
         plan = _fallback_plan(problem)
 

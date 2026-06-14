@@ -16,6 +16,8 @@ from langchain_core.messages import HumanMessage, AIMessage
 import config
 from graph import app
 from agents.roles import avatar_for
+from agents.client import reset_usage, usage_summary
+from export import transcript_to_markdown
 
 st.set_page_config(page_title="The Council", page_icon="🏛️", layout="wide")
 
@@ -30,6 +32,10 @@ if "scratchpad" not in st.session_state:
     st.session_state.scratchpad = ""
 if "exchanges" not in st.session_state:
     st.session_state.exchanges = []        # bounded Q/A recap for follow-ups
+if "usage" not in st.session_state:
+    st.session_state.usage = None          # last run's cost/usage summary
+if "last_error" not in st.session_state:
+    st.session_state.last_error = None     # persisted across the post-run rerun
 
 
 # --- Rendering helpers -------------------------------------------------------
@@ -73,7 +79,12 @@ def render_message(msg):
 
     if kind == "final":
         with st.chat_message("assistant", avatar="⚖️"):
-            st.markdown("### ⚖️ Final Answer")
+            conf = meta.get("confidence")
+            badge = ""
+            if conf is not None:
+                tier = "🟢" if conf >= 75 else ("🟡" if conf >= 50 else "🔴")
+                badge = f"  ·  {tier} confidence {conf}%"
+            st.markdown(f"### ⚖️ Final Answer{badge}")
             if reasoning:
                 with st.expander("🧠 How the Council reconciled this"):
                     st.markdown(reasoning)
@@ -113,12 +124,47 @@ with st.sidebar:
     st.divider()
     with st.expander("🧠 Shared scratchpad"):
         st.text(st.session_state.scratchpad or "(empty)")
+
+    # Cost & usage panel (from the most recent run).
+    if st.session_state.usage and st.session_state.usage.get("calls"):
+        u = st.session_state.usage
+        with st.expander(f"💸 Cost & usage · ~${u['cost']:.4f}", expanded=False):
+            c1, c2 = st.columns(2)
+            c1.metric("Model calls", u["calls"])
+            c2.metric("Total tokens", f"{u['total_tokens']:,}")
+            st.caption("Estimated cost per agent (input/output tokens):")
+            for label, b in sorted(u["by_label"].items(), key=lambda kv: -kv[1]["cost"]):
+                st.markdown(
+                    f"- **{label}** — ~${b['cost']:.4f}  "
+                    f"<span style='color:gray;font-size:0.85em'>"
+                    f"({b['input']:,} in / {b['output']:,} out, {b['calls']} call(s))</span>",
+                    unsafe_allow_html=True,
+                )
+            st.caption("Prices are estimates; configure in config.PRICING.")
+
+    # Export the session transcript.
+    if st.session_state.history:
+        conf = next(
+            (m.additional_kwargs.get("confidence")
+             for m in reversed(st.session_state.history)
+             if isinstance(m, AIMessage) and (m.additional_kwargs or {}).get("kind") == "final"),
+            None,
+        )
+        st.download_button(
+            "⬇️ Export transcript (Markdown)",
+            data=transcript_to_markdown(st.session_state.history, confidence=conf),
+            file_name="council-session.md",
+            mime="text/markdown",
+            use_container_width=True,
+        )
+
     if st.button("🔄 New session", use_container_width=True):
         st.session_state.thread_id = str(uuid.uuid4())
         st.session_state.history = []
         st.session_state.plan = []
         st.session_state.scratchpad = ""
         st.session_state.exchanges = []
+        st.session_state.usage = None
         st.rerun()
 
 
@@ -134,6 +180,10 @@ st.caption(
 for m in st.session_state.history:
     render_message(m)
 
+# Surface an error from the previous run (persisted across the post-run rerun).
+if st.session_state.last_error:
+    st.error(st.session_state.last_error)
+
 
 # --- Handle input -----------------------------------------------------------
 if prompt := st.chat_input("State your problem for The Council"):
@@ -141,6 +191,7 @@ if prompt := st.chat_input("State your problem for The Council"):
         st.error("No GOOGLE_API_KEY (or GEMINI_API_KEY) found. Set it in your environment or a .env file.")
         st.stop()
 
+    st.session_state.last_error = None
     user_msg = HumanMessage(content=prompt)
     st.session_state.history.append(user_msg)
     render_message(user_msg)
@@ -164,6 +215,7 @@ if prompt := st.chat_input("State your problem for The Council"):
     }
 
     final_answer = ""
+    reset_usage()
     status = st.status("🏛️ The Council is convening…", expanded=True)
     try:
         for event in app.stream(initial_state, config=cfg, stream_mode="updates"):
@@ -192,4 +244,7 @@ if prompt := st.chat_input("State your problem for The Council"):
             st.session_state.exchanges.append({"problem": prompt, "answer": final_answer})
     except Exception as e:  # noqa: BLE001 - surface any unexpected failure to the user
         status.update(label="⚠️ The Council hit an error.", state="error")
-        st.error(f"Something went wrong during deliberation: {e}")
+        st.session_state.last_error = f"Something went wrong during deliberation: {e}"
+    finally:
+        st.session_state.usage = usage_summary()
+        st.rerun()  # refresh sidebar (cost panel, export) and any persisted error

@@ -37,6 +37,26 @@ RECURSION_LIMIT = int(_env("COUNCIL_RECURSION_LIMIT", "60"))  # LangGraph safety
 MAX_RETRIES = int(_env("COUNCIL_MAX_RETRIES", "2"))
 
 
+# --- Persistence ------------------------------------------------------------
+# Path to a SQLite file for a durable, resumable checkpointer. Empty => use the
+# in-memory checkpointer (sessions are lost on restart).
+DB_PATH = _env("COUNCIL_DB_PATH", "")
+
+
+# --- Cost estimates ---------------------------------------------------------
+# Approximate USD per 1,000,000 tokens as (input, output). These are estimates
+# for the in-app cost panel only — override per model via env or edit here.
+PRICING = {
+    "gemini-3-pro-preview": (2.00, 12.00),
+    "gemini-2.5-flash": (0.30, 2.50),
+}
+DEFAULT_PRICING = (1.00, 4.00)
+
+
+def price_for(model: str):
+    return PRICING.get(model, DEFAULT_PRICING)
+
+
 # --- Phase labels -----------------------------------------------------------
 PHASE_PLAN = "Planning"
 PHASE_CRITIQUE = "Critique"

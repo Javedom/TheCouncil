@@ -18,7 +18,7 @@ RECURSION_LIMIT), so the flow cannot loop forever and always terminates.
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 
-import config
+import config  # noqa: E402
 from state import CouncilState
 from agents.planner import planner_node
 from agents.worker import worker_node
@@ -45,6 +45,22 @@ def route_after_critic(state):
     return "synthesizer"
 
 
+def _make_checkpointer():
+    """A durable SQLite checkpointer when COUNCIL_DB_PATH is set, else in-memory.
+
+    Falls back to MemorySaver on any error so the app never fails to start.
+    """
+    if config.DB_PATH:
+        try:
+            import sqlite3
+            from langgraph.checkpoint.sqlite import SqliteSaver
+            conn = sqlite3.connect(config.DB_PATH, check_same_thread=False)
+            return SqliteSaver(conn)
+        except Exception as e:  # noqa: BLE001
+            print(f"[Council] Durable checkpointer unavailable ({e}); using in-memory.")
+    return MemorySaver()
+
+
 def build_graph():
     workflow = StateGraph(CouncilState)
 
@@ -69,7 +85,7 @@ def build_graph():
     })
     workflow.add_edge("synthesizer", END)
 
-    return workflow.compile(checkpointer=MemorySaver())
+    return workflow.compile(checkpointer=_make_checkpointer())
 
 
 app = build_graph()
