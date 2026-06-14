@@ -4,7 +4,6 @@ Surfaces the full multi-step deliberation live: the dynamic plan, each phase as
 it happens, every member's contribution with its reasoning, the Critic's
 verdict, and the final synthesized answer.
 """
-import os
 import uuid
 
 import streamlit as st
@@ -16,11 +15,46 @@ from langchain_core.messages import HumanMessage, AIMessage
 import config
 from graph import app, app_review
 from agents.roles import avatar_for
-from agents.client import reset_usage, usage_summary
+from agents.client import reset_usage, usage_summary, set_api_key, has_api_key
 from export import transcript_to_markdown
 from documents import extract_text, build_grounding
 
 CAPABILITIES = ["reason", "research", "code", "write"]
+
+# Defaults for the editable settings, seeded from config/env on first load.
+DEFAULT_SETTINGS = {
+    "reasoning_model": config.PLANNER_MODEL,
+    "fast_model": config.WORKER_MODEL,
+    "max_steps": config.MAX_STEPS,
+    "max_plan_steps": config.MAX_PLAN_STEPS,
+    "max_revisions": config.MAX_REVISIONS,
+    "max_parallel": config.MAX_PARALLEL,
+    "recursion_limit": config.RECURSION_LIMIT,
+}
+
+
+def apply_settings():
+    """Push the current session's settings into the live config + client.
+
+    Re-applied every rerun so the process-wide config matches this session.
+    """
+    s = st.session_state.settings
+    config.apply_overrides({
+        "PRO_MODEL": s["reasoning_model"],
+        "PLANNER_MODEL": s["reasoning_model"],
+        "CRITIC_MODEL": s["reasoning_model"],
+        "SYNTH_MODEL": s["reasoning_model"],
+        "REASONING_WORKER_MODEL": s["reasoning_model"],
+        "FLASH_MODEL": s["fast_model"],
+        "WORKER_MODEL": s["fast_model"],
+        "MAX_STEPS": int(s["max_steps"]),
+        "MAX_PLAN_STEPS": int(s["max_plan_steps"]),
+        "MAX_REVISIONS": int(s["max_revisions"]),
+        "MAX_PARALLEL": int(s["max_parallel"]),
+        "RECURSION_LIMIT": int(s["recursion_limit"]),
+    })
+    if st.session_state.api_key:
+        set_api_key(st.session_state.api_key)
 
 st.set_page_config(page_title="The Council", page_icon="🏛️", layout="wide")
 
@@ -45,6 +79,13 @@ if "pending" not in st.session_state:
     st.session_state.pending = None         # run paused awaiting plan approval
 if "doc_files" not in st.session_state:
     st.session_state.doc_files = []         # [{"name", "text"}] grounding docs
+if "settings" not in st.session_state:
+    st.session_state.settings = dict(DEFAULT_SETTINGS)
+if "api_key" not in st.session_state:
+    st.session_state.api_key = ""           # in-memory only; never persisted
+
+# Apply this session's editable settings to the live config on every rerun.
+apply_settings()
 
 
 # --- Rendering helpers -------------------------------------------------------
@@ -159,7 +200,53 @@ def finalize_run(prompt, final_answer):
 # --- Sidebar ----------------------------------------------------------------
 with st.sidebar:
     st.header("🏛️ The Council")
-    st.caption(f"Dynamic multi-step deliberation · {config.PRO_MODEL}")
+    st.caption(f"Dynamic multi-step deliberation · {config.PLANNER_MODEL}")
+    st.divider()
+
+    # --- Settings (editable config, including API key) ----------------------
+    key_ok = has_api_key()
+    with st.expander("⚙️ Settings" + ("" if key_ok else " · ⚠️ API key needed"), expanded=not key_ok):
+        with st.form("settings_form", border=False):
+            api_key = st.text_input(
+                "Gemini API key", value=st.session_state.api_key, type="password",
+                help="Kept in memory for this session only — never written to disk. "
+                     "Overrides GOOGLE_API_KEY for this process.",
+                placeholder="Set, or leave blank to use GOOGLE_API_KEY",
+            )
+            reasoning_model = st.text_input(
+                "🧠 Reasoning model", value=st.session_state.settings["reasoning_model"],
+                help="Used for planning, critique, synthesis and reasoning/code steps.",
+            )
+            fast_model = st.text_input(
+                "⚡ Fast model", value=st.session_state.settings["fast_model"],
+                help="Used for research and writing steps.",
+            )
+            c1, c2 = st.columns(2)
+            max_steps = c1.number_input("Max steps", 1, 50, int(st.session_state.settings["max_steps"]))
+            max_plan_steps = c2.number_input("Max plan steps", 1, 20, int(st.session_state.settings["max_plan_steps"]))
+            max_revisions = c1.number_input("Max revisions", 0, 10, int(st.session_state.settings["max_revisions"]))
+            max_parallel = c2.number_input("Max parallel", 1, 16, int(st.session_state.settings["max_parallel"]))
+            recursion_limit = st.number_input("Recursion limit", 10, 500, int(st.session_state.settings["recursion_limit"]))
+
+            cc1, cc2 = st.columns(2)
+            if cc1.form_submit_button("💾 Save", use_container_width=True, type="primary"):
+                st.session_state.api_key = api_key
+                st.session_state.settings.update({
+                    "reasoning_model": reasoning_model.strip() or DEFAULT_SETTINGS["reasoning_model"],
+                    "fast_model": fast_model.strip() or DEFAULT_SETTINGS["fast_model"],
+                    "max_steps": int(max_steps),
+                    "max_plan_steps": int(max_plan_steps),
+                    "max_revisions": int(max_revisions),
+                    "max_parallel": int(max_parallel),
+                    "recursion_limit": int(recursion_limit),
+                })
+                st.rerun()
+            if cc2.form_submit_button("↩︎ Reset", use_container_width=True):
+                st.session_state.settings = dict(DEFAULT_SETTINGS)
+                st.rerun()
+        st.caption("Note: model/budget changes apply process-wide (last save wins "
+                   "across sessions). `COUNCIL_DB_PATH` is set at startup only.")
+
     st.divider()
     st.toggle(
         "✋ Review plan before running",
@@ -321,8 +408,9 @@ if st.session_state.pending:
 
 # --- Handle input -----------------------------------------------------------
 if prompt := st.chat_input("State your problem for The Council", disabled=bool(st.session_state.pending)):
-    if not (os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")):
-        st.error("No GOOGLE_API_KEY (or GEMINI_API_KEY) found. Set it in your environment or a .env file.")
+    if not has_api_key():
+        st.error("No Gemini API key. Add one under **⚙️ Settings** in the sidebar "
+                 "(or set GOOGLE_API_KEY in your environment).")
         st.stop()
 
     st.session_state.last_error = None

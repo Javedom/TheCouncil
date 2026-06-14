@@ -88,6 +88,22 @@ def get_client():
     return _client
 
 
+def set_api_key(key: str):
+    """Set the Gemini API key at runtime and force the client to re-initialize.
+
+    The key is kept only in the process environment (never written to disk).
+    """
+    global _client
+    key = (key or "").strip()
+    if key:
+        os.environ["GOOGLE_API_KEY"] = key
+        _client = None  # drop any client built with the old/missing key
+
+
+def has_api_key() -> bool:
+    return bool((os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY") or "").strip())
+
+
 # Relaxed safety so creative/security analysis tasks aren't spuriously blocked.
 _SAFETY = [
     types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_ONLY_HIGH"),

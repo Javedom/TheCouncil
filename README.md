@@ -29,6 +29,20 @@ planner ─▶ worker ─▶ (more steps?) ─▶ worker ...
    appended to the plan).
 4. **Synthesizer (Exec)** — reconciles everything into one clean final answer.
 
+### In-app settings
+
+The sidebar **⚙️ Settings** panel edits config live — no restart, no `.env`:
+
+- **Gemini API key** — kept in memory for the session only (never written to
+  disk), applied to the process and overrides `GOOGLE_API_KEY`.
+- **Reasoning model** (planning/critique/synthesis/reasoning+code steps) and
+  **Fast model** (research/writing steps).
+- **Budgets** — max steps, plan steps, revisions, parallelism, recursion limit.
+
+Changes take effect on the next run because nodes read `config` at execution
+time. Saving applies process-wide (last save wins across sessions);
+`COUNCIL_DB_PATH` is the one setting bound at startup only.
+
 ### Document grounding (RAG) & code execution
 
 - **Grounding documents** — upload txt/md/pdf/csv/json in the sidebar. Their

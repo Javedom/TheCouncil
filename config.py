@@ -58,6 +58,26 @@ def price_for(model: str):
     return PRICING.get(model, DEFAULT_PRICING)
 
 
+# --- Runtime overrides ------------------------------------------------------
+# These keys may be changed at runtime from the UI. Graph nodes read config.X at
+# execution time, so an override takes effect on the next run without rebuilding
+# the graph. (DB_PATH is intentionally excluded: it is bound when the durable
+# checkpointer is created at graph-build time.)
+_RUNTIME_KEYS = {
+    "PRO_MODEL", "FLASH_MODEL", "PLANNER_MODEL", "CRITIC_MODEL", "SYNTH_MODEL",
+    "WORKER_MODEL", "REASONING_WORKER_MODEL", "MAX_STEPS", "MAX_PLAN_STEPS",
+    "MAX_REVISIONS", "RECURSION_LIMIT", "MAX_PARALLEL", "MAX_RETRIES",
+}
+
+
+def apply_overrides(overrides: dict):
+    """Apply UI-supplied overrides to the module globals (whitelisted keys)."""
+    g = globals()
+    for key, value in (overrides or {}).items():
+        if key in _RUNTIME_KEYS and value is not None:
+            g[key] = value
+
+
 # --- Phase labels -----------------------------------------------------------
 PHASE_PLAN = "Planning"
 PHASE_CRITIQUE = "Critique"
