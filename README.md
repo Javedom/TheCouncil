@@ -29,6 +29,14 @@ planner ─▶ worker ─▶ (more steps?) ─▶ worker ...
    appended to the plan).
 4. **Synthesizer (Exec)** — reconciles everything into one clean final answer.
 
+### Human-in-the-loop plan review
+
+Toggle **"✋ Review plan before running"** in the sidebar to pause the Council
+after planning. You can edit roles, objectives, phases and capabilities, add or
+remove steps, then **Approve & run** (or **Cancel**). Implemented with a
+LangGraph `interrupt_after=["planner"]` plus `update_state`, so execution
+resumes from the edited plan — which is why the durable checkpointer matters.
+
 ### Persistence, export & cost
 
 - **Durable checkpointer** — set `COUNCIL_DB_PATH` to a SQLite file to make

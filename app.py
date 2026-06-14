@@ -14,10 +14,12 @@ load_dotenv()
 from langchain_core.messages import HumanMessage, AIMessage
 
 import config
-from graph import app
+from graph import app, app_review
 from agents.roles import avatar_for
 from agents.client import reset_usage, usage_summary
 from export import transcript_to_markdown
+
+CAPABILITIES = ["reason", "research", "code", "write"]
 
 st.set_page_config(page_title="The Council", page_icon="🏛️", layout="wide")
 
@@ -36,6 +38,10 @@ if "usage" not in st.session_state:
     st.session_state.usage = None          # last run's cost/usage summary
 if "last_error" not in st.session_state:
     st.session_state.last_error = None     # persisted across the post-run rerun
+if "approval_mode" not in st.session_state:
+    st.session_state.approval_mode = False  # review/edit the plan before running
+if "pending" not in st.session_state:
+    st.session_state.pending = None         # run paused awaiting plan approval
 
 
 # --- Rendering helpers -------------------------------------------------------
@@ -113,10 +119,50 @@ def render_message(msg):
         st.markdown(msg.content)
 
 
+def stream_and_render(graph, inp, cfg, status):
+    """Stream a (resumed) graph run, rendering messages and syncing the UI.
+
+    `inp` is the initial state for a fresh run, or None to resume after a pause.
+    Returns the final answer captured during the stream.
+    """
+    final_answer = ""
+    for event in graph.stream(inp, config=cfg, stream_mode="updates"):
+        for node_name, update in event.items():
+            if not isinstance(update, dict):  # e.g. "__interrupt__" payloads
+                continue
+            if update.get("plan") is not None:
+                st.session_state.plan = update["plan"]
+                render_plan_board(plan_board, st.session_state.plan)
+            if update.get("scratchpad"):
+                st.session_state.scratchpad = update["scratchpad"]
+            if update.get("final_answer"):
+                final_answer = update["final_answer"]
+            for msg in update.get("messages", []) or []:
+                if isinstance(msg, AIMessage):
+                    phase = (getattr(msg, "additional_kwargs", {}) or {}).get("phase", "")
+                    if phase:
+                        status.update(label=f"🏛️ {phase}…", state="running")
+                    st.session_state.history.append(msg)
+                    render_message(msg)
+    return final_answer
+
+
+def finalize_run(prompt, final_answer):
+    if final_answer:
+        st.session_state.exchanges.append({"problem": prompt, "answer": final_answer})
+    st.session_state.usage = usage_summary()
+
+
 # --- Sidebar ----------------------------------------------------------------
 with st.sidebar:
     st.header("🏛️ The Council")
     st.caption(f"Dynamic multi-step deliberation · {config.PRO_MODEL}")
+    st.divider()
+    st.toggle(
+        "✋ Review plan before running",
+        key="approval_mode",
+        help="Pause after planning so you can edit the roster and steps before the Council executes.",
+    )
     st.divider()
     st.subheader("📋 Plan board")
     plan_board = st.empty()
@@ -165,6 +211,7 @@ with st.sidebar:
         st.session_state.scratchpad = ""
         st.session_state.exchanges = []
         st.session_state.usage = None
+        st.session_state.pending = None
         st.rerun()
 
 
@@ -185,8 +232,70 @@ if st.session_state.last_error:
     st.error(st.session_state.last_error)
 
 
+# --- Pending plan review (human-in-the-loop) --------------------------------
+if st.session_state.pending:
+    p = st.session_state.pending
+    cfg = {"configurable": {"thread_id": p["thread_id"]}, "recursion_limit": config.RECURSION_LIMIT}
+
+    st.info("✋ **Review the plan.** Edit roles, objectives, phases or capabilities; "
+            "add or remove steps; then approve to convene the Council.")
+    editable = [
+        {"role": s["role"], "objective": s["objective"], "phase": s["phase"], "capability": s["capability"]}
+        for s in p["plan"]
+    ]
+    edited = st.data_editor(
+        editable,
+        num_rows="dynamic",
+        use_container_width=True,
+        column_config={
+            "role": st.column_config.TextColumn("Role", required=True),
+            "objective": st.column_config.TextColumn("Objective", width="large", required=True),
+            "phase": st.column_config.TextColumn("Phase"),
+            "capability": st.column_config.SelectboxColumn("Capability", options=CAPABILITIES, default="reason"),
+        },
+        key="plan_editor",
+    )
+
+    c1, c2 = st.columns(2)
+    if c1.button("▶️ Approve & run", type="primary", use_container_width=True):
+        # Rebuild a clean plan from the edited rows.
+        new_plan = []
+        for i, row in enumerate(edited):
+            role = (row.get("role") or "").strip()
+            objective = (row.get("objective") or "").strip()
+            if not role or not objective:
+                continue
+            new_plan.append({
+                "id": i,
+                "role": role,
+                "objective": objective,
+                "phase": (row.get("phase") or "Execution").strip(),
+                "capability": row.get("capability") or "reason",
+                "status": "pending",
+            })
+        app_review.update_state(cfg, {"plan": new_plan, "cursor": 0})
+        st.session_state.plan = new_plan
+        st.session_state.pending = None
+
+        reset_usage()
+        status = st.status("🏛️ The Council is deliberating…", expanded=True)
+        try:
+            final_answer = stream_and_render(app_review, None, cfg, status)
+            status.update(label="✅ The Council has delivered its answer.", state="complete", expanded=False)
+            finalize_run(p["prompt"], final_answer)
+        except Exception as e:  # noqa: BLE001
+            status.update(label="⚠️ The Council hit an error.", state="error")
+            st.session_state.last_error = f"Something went wrong during deliberation: {e}"
+            st.session_state.usage = usage_summary()
+        st.rerun()
+
+    if c2.button("✖️ Cancel", use_container_width=True):
+        st.session_state.pending = None
+        st.rerun()
+
+
 # --- Handle input -----------------------------------------------------------
-if prompt := st.chat_input("State your problem for The Council"):
+if prompt := st.chat_input("State your problem for The Council", disabled=bool(st.session_state.pending)):
     if not (os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")):
         st.error("No GOOGLE_API_KEY (or GEMINI_API_KEY) found. Set it in your environment or a .env file.")
         st.stop()
@@ -208,43 +317,35 @@ if prompt := st.chat_input("State your problem for The Council"):
         seed_messages.append(HumanMessage(content=f"(Context from earlier in this conversation)\n{recap}"))
     seed_messages.append(user_msg)
 
+    thread_id = str(uuid.uuid4())
     initial_state = {"messages": seed_messages, "problem": prompt, "scratchpad": ""}
-    cfg = {
-        "configurable": {"thread_id": str(uuid.uuid4())},
-        "recursion_limit": config.RECURSION_LIMIT,
-    }
+    cfg = {"configurable": {"thread_id": thread_id}, "recursion_limit": config.RECURSION_LIMIT}
 
-    final_answer = ""
     reset_usage()
-    status = st.status("🏛️ The Council is convening…", expanded=True)
-    try:
-        for event in app.stream(initial_state, config=cfg, stream_mode="updates"):
-            for node_name, update in event.items():
-                if not isinstance(update, dict):
-                    continue
-
-                # Keep the live plan board / scratchpad in sync.
-                if update.get("plan") is not None:
-                    st.session_state.plan = update["plan"]
-                    render_plan_board(plan_board, st.session_state.plan)
-                if update.get("scratchpad"):
-                    st.session_state.scratchpad = update["scratchpad"]
-                if update.get("final_answer"):
-                    final_answer = update["final_answer"]
-
-                for msg in update.get("messages", []) or []:
-                    if isinstance(msg, AIMessage):
-                        phase = (getattr(msg, "additional_kwargs", {}) or {}).get("phase", "")
-                        if phase:
-                            status.update(label=f"🏛️ {phase}…", state="running")
-                        st.session_state.history.append(msg)
-                        render_message(msg)
-        status.update(label="✅ The Council has delivered its answer.", state="complete", expanded=False)
-        if final_answer:
-            st.session_state.exchanges.append({"problem": prompt, "answer": final_answer})
-    except Exception as e:  # noqa: BLE001 - surface any unexpected failure to the user
-        status.update(label="⚠️ The Council hit an error.", state="error")
-        st.session_state.last_error = f"Something went wrong during deliberation: {e}"
-    finally:
+    if st.session_state.approval_mode:
+        # Run only as far as the plan, then pause for the user to review/edit.
+        status = st.status("🧭 Drafting the plan…", expanded=True)
+        try:
+            stream_and_render(app_review, initial_state, cfg, status)
+            snap = app_review.get_state(cfg)
+            if snap.next:  # paused after the planner
+                st.session_state.pending = {"thread_id": thread_id, "prompt": prompt, "plan": snap.values.get("plan", [])}
+                status.update(label="✋ Plan ready — review it below.", state="complete", expanded=False)
+            else:  # nothing to pause on; treat as finished
+                finalize_run(prompt, snap.values.get("final_answer", ""))
+        except Exception as e:  # noqa: BLE001
+            status.update(label="⚠️ The Council hit an error.", state="error")
+            st.session_state.last_error = f"Something went wrong while planning: {e}"
         st.session_state.usage = usage_summary()
-        st.rerun()  # refresh sidebar (cost panel, export) and any persisted error
+        st.rerun()
+    else:
+        status = st.status("🏛️ The Council is convening…", expanded=True)
+        try:
+            final_answer = stream_and_render(app, initial_state, cfg, status)
+            status.update(label="✅ The Council has delivered its answer.", state="complete", expanded=False)
+            finalize_run(prompt, final_answer)
+        except Exception as e:  # noqa: BLE001 - surface any unexpected failure to the user
+            status.update(label="⚠️ The Council hit an error.", state="error")
+            st.session_state.last_error = f"Something went wrong during deliberation: {e}"
+            st.session_state.usage = usage_summary()
+        st.rerun()

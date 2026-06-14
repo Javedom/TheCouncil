@@ -61,7 +61,7 @@ def _make_checkpointer():
     return MemorySaver()
 
 
-def build_graph():
+def build_graph(interrupt_after=None):
     workflow = StateGraph(CouncilState)
 
     workflow.add_node("planner", planner_node)
@@ -85,7 +85,13 @@ def build_graph():
     })
     workflow.add_edge("synthesizer", END)
 
-    return workflow.compile(checkpointer=_make_checkpointer())
+    return workflow.compile(
+        checkpointer=_make_checkpointer(),
+        interrupt_after=interrupt_after or [],
+    )
 
 
+# Default graph runs end-to-end. `app_review` pauses after planning so the user
+# can review/edit the plan (human-in-the-loop) before execution begins.
 app = build_graph()
+app_review = build_graph(interrupt_after=["planner"])
