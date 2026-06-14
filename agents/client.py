@@ -183,6 +183,20 @@ def _extract_text(response) -> str:
     return ""
 
 
+_THINKING_LEVELS = {"minimal", "low", "medium", "high"}
+
+
+def _thinking_config():
+    """Build a ThinkingConfig from config.THINKING_LEVEL, or None for default."""
+    level = (getattr(config, "THINKING_LEVEL", "") or "").strip().lower()
+    if level not in _THINKING_LEVELS:
+        return None
+    try:
+        return types.ThinkingConfig(thinking_level=level)
+    except Exception:  # noqa: BLE001 - unsupported SDK -> ignore
+        return None
+
+
 def safe_generate(
     model: str,
     system_instruction: str,
@@ -200,6 +214,9 @@ def safe_generate(
     cfg_kwargs = {"system_instruction": system_instruction, "safety_settings": _SAFETY}
     if tools:
         cfg_kwargs["tools"] = tools
+    thinking = _thinking_config()
+    if thinking is not None:
+        cfg_kwargs["thinking_config"] = thinking
     cfg = types.GenerateContentConfig(**cfg_kwargs)
 
     last_err = None
@@ -226,12 +243,16 @@ def safe_generate_structured(
 ) -> Optional[T]:
     """Generate a validated pydantic object, or None if it cannot be produced."""
     client = get_client()
-    cfg = types.GenerateContentConfig(
-        system_instruction=system_instruction,
-        safety_settings=_SAFETY,
-        response_mime_type="application/json",
-        response_json_schema=schema.model_json_schema(),
-    )
+    cfg_kwargs = {
+        "system_instruction": system_instruction,
+        "safety_settings": _SAFETY,
+        "response_mime_type": "application/json",
+        "response_json_schema": schema.model_json_schema(),
+    }
+    thinking = _thinking_config()
+    if thinking is not None:
+        cfg_kwargs["thinking_config"] = thinking
+    cfg = types.GenerateContentConfig(**cfg_kwargs)
 
     for attempt in range(config.MAX_RETRIES + 1):
         start = time.time()

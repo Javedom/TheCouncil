@@ -15,8 +15,9 @@ def _env(name: str, default: str) -> str:
 # --- Models -----------------------------------------------------------------
 # The Council runs on Google Gemini. "Pro" handles reasoning-heavy roles
 # (planning, critique, synthesis); "Flash" handles fast execution work.
-PRO_MODEL = _env("COUNCIL_PRO_MODEL", "gemini-3-pro-preview")
-FLASH_MODEL = _env("COUNCIL_FLASH_MODEL", "gemini-2.5-flash")
+# Defaults track the current Gemini 3.x line; all are editable in the UI.
+PRO_MODEL = _env("COUNCIL_PRO_MODEL", "gemini-3.1-pro")
+FLASH_MODEL = _env("COUNCIL_FLASH_MODEL", "gemini-3.5-flash")
 
 PLANNER_MODEL = _env("COUNCIL_PLANNER_MODEL", PRO_MODEL)
 CRITIC_MODEL = _env("COUNCIL_CRITIC_MODEL", PRO_MODEL)
@@ -24,6 +25,11 @@ SYNTH_MODEL = _env("COUNCIL_SYNTH_MODEL", PRO_MODEL)
 WORKER_MODEL = _env("COUNCIL_WORKER_MODEL", FLASH_MODEL)
 # Reasoning/analysis steps benefit from the stronger model.
 REASONING_WORKER_MODEL = _env("COUNCIL_REASONING_MODEL", PRO_MODEL)
+
+# Optional Gemini 3.x thinking level: "", "minimal", "low", "medium", "high".
+# Empty string => use each model's default. (Note: "minimal" is not supported on
+# Pro models.)
+THINKING_LEVEL = _env("COUNCIL_THINKING_LEVEL", "")
 
 
 # --- Budgets / circuit breakers --------------------------------------------
@@ -46,8 +52,12 @@ DB_PATH = _env("COUNCIL_DB_PATH", "")
 
 # --- Cost estimates ---------------------------------------------------------
 # Approximate USD per 1,000,000 tokens as (input, output). These are estimates
-# for the in-app cost panel only — override per model via env or edit here.
+# for the in-app cost panel only — editable in the UI or here.
 PRICING = {
+    "gemini-3.1-pro": (2.00, 12.00),
+    "gemini-3.5-flash": (0.30, 2.50),
+    "gemini-3.1-flash-lite": (0.10, 0.40),
+    "gemini-3-flash-preview": (0.30, 2.50),
     "gemini-3-pro-preview": (2.00, 12.00),
     "gemini-2.5-flash": (0.30, 2.50),
 }
@@ -67,6 +77,7 @@ _RUNTIME_KEYS = {
     "PRO_MODEL", "FLASH_MODEL", "PLANNER_MODEL", "CRITIC_MODEL", "SYNTH_MODEL",
     "WORKER_MODEL", "REASONING_WORKER_MODEL", "MAX_STEPS", "MAX_PLAN_STEPS",
     "MAX_REVISIONS", "RECURSION_LIMIT", "MAX_PARALLEL", "MAX_RETRIES",
+    "THINKING_LEVEL", "PRICING",
 }
 
 

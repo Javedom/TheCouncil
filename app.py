@@ -20,11 +20,25 @@ from export import transcript_to_markdown
 from documents import extract_text, build_grounding
 
 CAPABILITIES = ["reason", "research", "code", "write"]
+THINKING_LEVELS = ["(model default)", "minimal", "low", "medium", "high"]
+
+# Per-role models exposed in the UI -> the config key each maps to.
+ROLE_MODELS = {
+    "planner_model": ("🧭 Planner", "PLANNER_MODEL"),
+    "critic_model": ("🕵️ Critic", "CRITIC_MODEL"),
+    "synth_model": ("⚖️ Synthesizer", "SYNTH_MODEL"),
+    "reasoning_worker_model": ("🧠 Reasoning / code worker", "REASONING_WORKER_MODEL"),
+    "worker_model": ("⚡ Research / writing worker", "WORKER_MODEL"),
+}
 
 # Defaults for the editable settings, seeded from config/env on first load.
 DEFAULT_SETTINGS = {
-    "reasoning_model": config.PLANNER_MODEL,
-    "fast_model": config.WORKER_MODEL,
+    "planner_model": config.PLANNER_MODEL,
+    "critic_model": config.CRITIC_MODEL,
+    "synth_model": config.SYNTH_MODEL,
+    "reasoning_worker_model": config.REASONING_WORKER_MODEL,
+    "worker_model": config.WORKER_MODEL,
+    "thinking_level": config.THINKING_LEVEL,
     "max_steps": config.MAX_STEPS,
     "max_plan_steps": config.MAX_PLAN_STEPS,
     "max_revisions": config.MAX_REVISIONS,
@@ -40,18 +54,21 @@ def apply_settings():
     """
     s = st.session_state.settings
     config.apply_overrides({
-        "PRO_MODEL": s["reasoning_model"],
-        "PLANNER_MODEL": s["reasoning_model"],
-        "CRITIC_MODEL": s["reasoning_model"],
-        "SYNTH_MODEL": s["reasoning_model"],
-        "REASONING_WORKER_MODEL": s["reasoning_model"],
-        "FLASH_MODEL": s["fast_model"],
-        "WORKER_MODEL": s["fast_model"],
+        "PLANNER_MODEL": s["planner_model"],
+        "CRITIC_MODEL": s["critic_model"],
+        "SYNTH_MODEL": s["synth_model"],
+        "REASONING_WORKER_MODEL": s["reasoning_worker_model"],
+        "WORKER_MODEL": s["worker_model"],
+        # Keep the Pro/Flash aliases coherent for display + cost defaults.
+        "PRO_MODEL": s["planner_model"],
+        "FLASH_MODEL": s["worker_model"],
+        "THINKING_LEVEL": s.get("thinking_level", ""),
         "MAX_STEPS": int(s["max_steps"]),
         "MAX_PLAN_STEPS": int(s["max_plan_steps"]),
         "MAX_REVISIONS": int(s["max_revisions"]),
         "MAX_PARALLEL": int(s["max_parallel"]),
         "RECURSION_LIMIT": int(s["recursion_limit"]),
+        "PRICING": dict(st.session_state.pricing),
     })
     if st.session_state.api_key:
         set_api_key(st.session_state.api_key)
@@ -81,6 +98,8 @@ if "doc_files" not in st.session_state:
     st.session_state.doc_files = []         # [{"name", "text"}] grounding docs
 if "settings" not in st.session_state:
     st.session_state.settings = dict(DEFAULT_SETTINGS)
+if "pricing" not in st.session_state:
+    st.session_state.pricing = dict(config.PRICING)  # {model: (in, out)} per 1M
 if "api_key" not in st.session_state:
     st.session_state.api_key = ""           # in-memory only; never persisted
 
@@ -205,7 +224,10 @@ with st.sidebar:
 
     # --- Settings (editable config, including API key) ----------------------
     key_ok = has_api_key()
+    settings = st.session_state.settings
     with st.expander("⚙️ Settings" + ("" if key_ok else " · ⚠️ API key needed"), expanded=not key_ok):
+
+        # Core settings: API key, thinking level, budgets.
         with st.form("settings_form", border=False):
             api_key = st.text_input(
                 "Gemini API key", value=st.session_state.api_key, type="password",
@@ -213,27 +235,25 @@ with st.sidebar:
                      "Overrides GOOGLE_API_KEY for this process.",
                 placeholder="Set, or leave blank to use GOOGLE_API_KEY",
             )
-            reasoning_model = st.text_input(
-                "🧠 Reasoning model", value=st.session_state.settings["reasoning_model"],
-                help="Used for planning, critique, synthesis and reasoning/code steps.",
-            )
-            fast_model = st.text_input(
-                "⚡ Fast model", value=st.session_state.settings["fast_model"],
-                help="Used for research and writing steps.",
+            tl_current = settings.get("thinking_level", "") or ""
+            tl_choice = st.selectbox(
+                "Thinking level (Gemini 3.x)", THINKING_LEVELS,
+                index=THINKING_LEVELS.index(tl_current) if tl_current in THINKING_LEVELS else 0,
+                help="Higher = deeper reasoning, more cost/latency. 'minimal' is not "
+                     "supported on Pro models.",
             )
             c1, c2 = st.columns(2)
-            max_steps = c1.number_input("Max steps", 1, 50, int(st.session_state.settings["max_steps"]))
-            max_plan_steps = c2.number_input("Max plan steps", 1, 20, int(st.session_state.settings["max_plan_steps"]))
-            max_revisions = c1.number_input("Max revisions", 0, 10, int(st.session_state.settings["max_revisions"]))
-            max_parallel = c2.number_input("Max parallel", 1, 16, int(st.session_state.settings["max_parallel"]))
-            recursion_limit = st.number_input("Recursion limit", 10, 500, int(st.session_state.settings["recursion_limit"]))
+            max_steps = c1.number_input("Max steps", 1, 50, int(settings["max_steps"]))
+            max_plan_steps = c2.number_input("Max plan steps", 1, 20, int(settings["max_plan_steps"]))
+            max_revisions = c1.number_input("Max revisions", 0, 10, int(settings["max_revisions"]))
+            max_parallel = c2.number_input("Max parallel", 1, 16, int(settings["max_parallel"]))
+            recursion_limit = st.number_input("Recursion limit", 10, 500, int(settings["recursion_limit"]))
 
             cc1, cc2 = st.columns(2)
             if cc1.form_submit_button("💾 Save", use_container_width=True, type="primary"):
                 st.session_state.api_key = api_key
-                st.session_state.settings.update({
-                    "reasoning_model": reasoning_model.strip() or DEFAULT_SETTINGS["reasoning_model"],
-                    "fast_model": fast_model.strip() or DEFAULT_SETTINGS["fast_model"],
+                settings.update({
+                    "thinking_level": "" if tl_choice == "(model default)" else tl_choice,
                     "max_steps": int(max_steps),
                     "max_plan_steps": int(max_plan_steps),
                     "max_revisions": int(max_revisions),
@@ -241,11 +261,59 @@ with st.sidebar:
                     "recursion_limit": int(recursion_limit),
                 })
                 st.rerun()
-            if cc2.form_submit_button("↩︎ Reset", use_container_width=True):
+            if cc2.form_submit_button("↩︎ Reset all", use_container_width=True):
                 st.session_state.settings = dict(DEFAULT_SETTINGS)
+                st.session_state.pricing = dict(config.PRICING)
                 st.rerun()
-        st.caption("Note: model/budget changes apply process-wide (last save wins "
-                   "across sessions). `COUNCIL_DB_PATH` is set at startup only.")
+
+        # Per-role model overrides.
+        with st.expander("🎛️ Models (per role)"):
+            apply_all = st.text_input("Set all roles to", placeholder="e.g. gemini-3.5-flash", key="apply_all_model")
+            if st.button("Apply to all roles", use_container_width=True) and apply_all.strip():
+                for k in ROLE_MODELS:
+                    settings[k] = apply_all.strip()
+                st.rerun()
+            with st.form("models_form", border=False):
+                new_models = {}
+                for key, (label, _cfg) in ROLE_MODELS.items():
+                    new_models[key] = st.text_input(label, value=settings[key], key=f"model_{key}")
+                if st.form_submit_button("💾 Save models", use_container_width=True, type="primary"):
+                    for key in ROLE_MODELS:
+                        settings[key] = new_models[key].strip() or DEFAULT_SETTINGS[key]
+                    st.rerun()
+
+        # Editable pricing table (estimates for the cost panel).
+        with st.expander("💸 Pricing (USD / 1M tokens)"):
+            rows = [{"model": m, "input": p[0], "output": p[1]}
+                    for m, p in st.session_state.pricing.items()]
+            # Ensure the currently-selected models are present to be priced.
+            present = {r["model"] for r in rows}
+            for key in ROLE_MODELS:
+                m = settings[key]
+                if m and m not in present:
+                    d = config.DEFAULT_PRICING
+                    rows.append({"model": m, "input": d[0], "output": d[1]})
+                    present.add(m)
+            edited_prices = st.data_editor(
+                rows, num_rows="dynamic", use_container_width=True, key="pricing_editor",
+                column_config={
+                    "model": st.column_config.TextColumn("Model", required=True),
+                    "input": st.column_config.NumberColumn("Input $/1M", min_value=0.0, format="%.4f"),
+                    "output": st.column_config.NumberColumn("Output $/1M", min_value=0.0, format="%.4f"),
+                },
+            )
+            if st.button("💾 Save pricing", use_container_width=True, type="primary"):
+                new_pricing = {}
+                for r in edited_prices:
+                    name = (r.get("model") or "").strip()
+                    if not name:
+                        continue
+                    new_pricing[name] = (float(r.get("input") or 0.0), float(r.get("output") or 0.0))
+                st.session_state.pricing = new_pricing
+                st.rerun()
+
+        st.caption("Note: model/budget/pricing changes apply process-wide (last save "
+                   "wins across sessions). `COUNCIL_DB_PATH` is set at startup only.")
 
     st.divider()
     st.toggle(

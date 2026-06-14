@@ -35,13 +35,18 @@ The sidebar **⚙️ Settings** panel edits config live — no restart, no `.env
 
 - **Gemini API key** — kept in memory for the session only (never written to
   disk), applied to the process and overrides `GOOGLE_API_KEY`.
-- **Reasoning model** (planning/critique/synthesis/reasoning+code steps) and
-  **Fast model** (research/writing steps).
+- **Per-role models** (🎛️ Models) — set the model for each role independently
+  (Planner, Critic, Synthesizer, reasoning/code worker, research/writing
+  worker), or "Apply to all roles" at once.
+- **Thinking level** (Gemini 3.x) — `minimal`/`low`/`medium`/`high`, or the
+  model default. (`minimal` isn't supported on Pro models.)
 - **Budgets** — max steps, plan steps, revisions, parallelism, recursion limit.
+- **Pricing** (💸) — editable USD/1M-token table that feeds the cost panel.
 
-Changes take effect on the next run because nodes read `config` at execution
-time. Saving applies process-wide (last save wins across sessions);
-`COUNCIL_DB_PATH` is the one setting bound at startup only.
+Defaults track the current Gemini 3.x line (`gemini-3.1-pro`,
+`gemini-3.5-flash`). Changes take effect on the next run because nodes read
+`config` at execution time. Saving applies process-wide (last save wins across
+sessions); `COUNCIL_DB_PATH` is the one setting bound at startup only.
 
 ### Document grounding (RAG) & code execution
 
