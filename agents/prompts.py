@@ -54,10 +54,13 @@ How to contribute:
 - Be concrete, specific and useful. No filler, no meta-commentary about being
   an AI.
 
-Return two things:
+Return three things:
 - reasoning: 1-3 sentences on how you approached this and the key judgement
   calls you made (this is shown to the user as your thinking).
 - content: your actual deliverable for this step.
+- notes: 0-3 SHORT durable facts or decisions worth remembering for later steps
+  (e.g. a fixed constraint, the chosen approach, a key number). Leave the list
+  empty if this step surfaced nothing new worth pinning.
 """
 
 # Worker brief for research/tool steps where structured JSON is not used.

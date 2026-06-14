@@ -7,7 +7,7 @@ from typing import List, Literal, Optional
 from pydantic import BaseModel, Field
 
 import config
-from .client import safe_generate_structured, render_transcript, build_contents
+from .client import safe_generate_structured, render_transcript, build_contents, bullets
 from .prompts import PLANNER_PROMPT
 from .events import council_message
 
@@ -61,7 +61,7 @@ def planner_node(state):
         })
 
     # Build a human-readable plan summary for the UI / transcript.
-    criteria_md = "\n".join(f"- {c}" for c in plan.success_criteria) or "- (none specified)"
+    criteria_md = bullets(plan.success_criteria)
     roster_md = "\n".join(
         f"{i+1}. **{s['role']}** — {s['objective']}  _(phase: {s['phase']})_"
         for i, s in enumerate(plan_steps)
@@ -70,6 +70,14 @@ def planner_node(state):
         f"**Understanding**\n{plan.understanding}\n\n"
         f"**Success criteria**\n{criteria_md}\n\n"
         f"**Plan**\n{roster_md}"
+    )
+
+    # Seed the shared scratchpad so it is immediately useful; workers append
+    # durable facts under "Key facts & decisions" as the work progresses.
+    scratchpad = (
+        f"## Understanding\n{plan.understanding}\n\n"
+        f"## Success criteria\n{criteria_md}\n\n"
+        f"## Key facts & decisions"
     )
 
     msg = council_message(
@@ -94,6 +102,6 @@ def planner_node(state):
         "phase": config.PHASE_PLAN,
         "steps_executed": 0,
         "revisions": 0,
-        "scratchpad": state.get("scratchpad", ""),
+        "scratchpad": scratchpad,
         "messages": [msg],
     }

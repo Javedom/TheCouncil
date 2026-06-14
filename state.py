@@ -17,7 +17,7 @@ class PlanStep(TypedDict):
     objective: str     # what this step must accomplish
     phase: str         # phase label this step belongs to, e.g. "Research"
     capability: str    # "reason" | "research" | "code" | "write"
-    status: str        # "pending" | "active" | "done"
+    status: str        # "pending" | "done" | "failed" (UI derives "active")
 
 
 class CouncilState(TypedDict, total=False):

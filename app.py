@@ -28,6 +28,8 @@ if "plan" not in st.session_state:
     st.session_state.plan = []
 if "scratchpad" not in st.session_state:
     st.session_state.scratchpad = ""
+if "exchanges" not in st.session_state:
+    st.session_state.exchanges = []        # bounded Q/A recap for follow-ups
 
 
 # --- Rendering helpers -------------------------------------------------------
@@ -36,9 +38,15 @@ def render_plan_board(container, plan):
         if not plan:
             st.caption("No plan yet — pose a problem to convene the Council.")
             return
-        icons = {"done": "✅", "active": "▶️", "pending": "⏳"}
+        icons = {"done": "✅", "active": "▶️", "pending": "⏳", "failed": "⚠️"}
+        active_marked = False
         for i, step in enumerate(plan):
-            icon = icons.get(step.get("status", "pending"), "⏳")
+            status = step.get("status", "pending")
+            # Derive the "currently running" indicator: the first not-yet-done
+            # step is shown as active so progress is visible while it runs.
+            if status == "pending" and not active_marked:
+                status, active_marked = "active", True
+            icon = icons.get(status, "⏳")
             st.markdown(
                 f"{icon} **{i+1}. {step['role']}**  \n"
                 f"<span style='color:gray;font-size:0.85em'>{step['phase']} — {step['objective']}</span>",
@@ -78,6 +86,12 @@ def render_message(msg):
             st.markdown(msg.content)
         return
 
+    if kind == "error":
+        with st.chat_message("assistant", avatar="⚠️"):
+            st.markdown(f"**{role}** · _{meta.get('phase','')}_")
+            st.warning(msg.content)
+        return
+
     # Generic dynamic worker.
     with st.chat_message("assistant", avatar=avatar_for(role)):
         phase = meta.get("phase", "")
@@ -104,6 +118,7 @@ with st.sidebar:
         st.session_state.history = []
         st.session_state.plan = []
         st.session_state.scratchpad = ""
+        st.session_state.exchanges = []
         st.rerun()
 
 
@@ -130,16 +145,25 @@ if prompt := st.chat_input("State your problem for The Council"):
     st.session_state.history.append(user_msg)
     render_message(user_msg)
 
-    initial_state = {
-        "messages": [user_msg],
-        "problem": prompt,
-        "scratchpad": st.session_state.scratchpad,
-    }
+    # Each problem runs on a FRESH thread so the checkpointer never accumulates a
+    # whole prior deliberation. For follow-ups we seed only a short, bounded
+    # recap of recent Q/A pairs so context is preserved without token blow-up.
+    seed_messages = []
+    if st.session_state.exchanges:
+        recap = "\n\n".join(
+            f"Q: {e['problem']}\nA: {e['answer'][:600]}"
+            for e in st.session_state.exchanges[-3:]
+        )
+        seed_messages.append(HumanMessage(content=f"(Context from earlier in this conversation)\n{recap}"))
+    seed_messages.append(user_msg)
+
+    initial_state = {"messages": seed_messages, "problem": prompt, "scratchpad": ""}
     cfg = {
-        "configurable": {"thread_id": st.session_state.thread_id},
+        "configurable": {"thread_id": str(uuid.uuid4())},
         "recursion_limit": config.RECURSION_LIMIT,
     }
 
+    final_answer = ""
     status = st.status("🏛️ The Council is convening…", expanded=True)
     try:
         for event in app.stream(initial_state, config=cfg, stream_mode="updates"):
@@ -153,6 +177,8 @@ if prompt := st.chat_input("State your problem for The Council"):
                     render_plan_board(plan_board, st.session_state.plan)
                 if update.get("scratchpad"):
                     st.session_state.scratchpad = update["scratchpad"]
+                if update.get("final_answer"):
+                    final_answer = update["final_answer"]
 
                 for msg in update.get("messages", []) or []:
                     if isinstance(msg, AIMessage):
@@ -162,6 +188,8 @@ if prompt := st.chat_input("State your problem for The Council"):
                         st.session_state.history.append(msg)
                         render_message(msg)
         status.update(label="✅ The Council has delivered its answer.", state="complete", expanded=False)
+        if final_answer:
+            st.session_state.exchanges.append({"problem": prompt, "answer": final_answer})
     except Exception as e:  # noqa: BLE001 - surface any unexpected failure to the user
         status.update(label="⚠️ The Council hit an error.", state="error")
         st.error(f"Something went wrong during deliberation: {e}")

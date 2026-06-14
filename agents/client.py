@@ -69,7 +69,12 @@ def build_contents(transcript: str, directive: str) -> List[types.Content]:
 
 
 def _extract_text(response) -> str:
-    """Pull text out of a response, tolerating empty/blocked candidates."""
+    """Pull text out of a response, tolerating empty/blocked candidates.
+
+    Returns "" when the model produced no usable content so callers can detect
+    failure, rather than a placeholder string that would otherwise flow into the
+    transcript and the final answer as if it were a real contribution.
+    """
     text = getattr(response, "text", None)
     if text:
         return text.strip()
@@ -80,9 +85,10 @@ def _extract_text(response) -> str:
         if joined:
             return joined
         reason = getattr(cand, "finish_reason", "unknown")
-        return f"*[No content generated. Finish reason: {reason}.]*"
-    except Exception:
-        return "*[No content generated.]*"
+        print(f"[Council] Model returned no content. Finish reason: {reason}")
+    except Exception as e:  # noqa: BLE001
+        print(f"[Council] Could not extract text from response: {e}")
+    return ""
 
 
 def safe_generate(
@@ -91,7 +97,12 @@ def safe_generate(
     contents,
     tools: Optional[list] = None,
 ) -> str:
-    """Generate free-form text. Never raises; returns a usable string."""
+    """Generate free-form text. Never raises.
+
+    Returns the generated text, or "" if the model could not be reached or
+    produced nothing. An empty string is the failure signal — callers must treat
+    it as "this step produced no output" rather than as content.
+    """
     client = get_client()
     cfg_kwargs = {"system_instruction": system_instruction, "safety_settings": _SAFETY}
     if tools:
@@ -107,7 +118,8 @@ def safe_generate(
             last_err = e
             if attempt < config.MAX_RETRIES:
                 time.sleep(1.5 * (attempt + 1))
-    return f"*[The Council hit a technical issue reaching the model: {last_err}]*"
+    print(f"[Council] Generation failed after retries: {last_err}")
+    return ""
 
 
 def safe_generate_structured(
@@ -129,8 +141,44 @@ def safe_generate_structured(
         try:
             response = client.models.generate_content(model=model, contents=contents, config=cfg)
             raw = _extract_text(response)
+            if not raw:
+                raise ValueError("empty response")
             return schema.model_validate_json(raw)
         except Exception:  # noqa: BLE001
             if attempt < config.MAX_RETRIES:
                 time.sleep(1.5 * (attempt + 1))
     return None
+
+
+def bullets(items, empty: str = "- (none specified)") -> str:
+    """Render a list as a markdown bullet list, with a placeholder when empty."""
+    cleaned = [str(i).strip() for i in (items or []) if str(i).strip()]
+    return "\n".join(f"- {i}" for i in cleaned) if cleaned else empty
+
+
+def generate_reasoned(
+    model: str,
+    system_instruction: str,
+    contents,
+    schema: Type[T],
+    fallback_reasoning: str = "",
+):
+    """Structured {reasoning, content, ...} generation with a free-form fallback.
+
+    Returns ``(obj, content, reasoning, ok)``:
+      - obj: the validated schema instance, or None if we fell back to text.
+      - content / reasoning: the deliverable and its rationale.
+      - ok: False only when the model produced no usable content at all.
+
+    Centralizes the "try structured, else plain text, else fail" pattern shared
+    by the worker and synthesizer nodes. The schema must expose ``content`` and
+    ``reasoning`` fields.
+    """
+    obj = safe_generate_structured(model, system_instruction, contents, schema)
+    if obj is not None and (getattr(obj, "content", "") or "").strip():
+        reasoning = (getattr(obj, "reasoning", "") or "").strip() or fallback_reasoning
+        return obj, obj.content, reasoning, True
+    text = safe_generate(model, system_instruction, contents)
+    if text:
+        return None, text, fallback_reasoning, True
+    return None, "", fallback_reasoning, False
