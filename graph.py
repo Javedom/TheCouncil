@@ -1,136 +1,96 @@
+"""The Council graph.
+
+A robust, dynamic, multi-step flow:
+
+    planner ─▶ worker ─▶ (more steps?) ─▶ worker ...
+                  │
+                  └─(plan done)─▶ critic ─▶ (revise & budget?) ─▶ worker
+                                     │
+                                     └─(approve / out of budget)─▶ synthesizer ─▶ END
+
+The Planner builds a problem-specific team and ordered plan. A single generic
+Worker executes each step in turn. The Critic gates quality and may trigger one
+bounded revision loop. The Synthesizer always delivers a final answer.
+
+All routing is deterministic and bounded (MAX_STEPS / MAX_REVISIONS /
+RECURSION_LIMIT), so the flow cannot loop forever and always terminates.
+"""
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
-from langchain_core.messages import HumanMessage
+
+import config  # noqa: E402
 from state import CouncilState
-from agents.supervisor import chairman_node
-from agents.workers import (
-    architect_node, 
-    writer_node, 
-    skeptic_node, 
-    exec_node, 
-    researcher_node, 
-    coder_node,
-    adhoc_node
-)
+from agents.planner import planner_node
+from agents.worker import worker_node, ready_steps
+from agents.critic import critic_node
+from agents.synthesizer import synthesizer_node
 
-# Initialize the Graph
-workflow = StateGraph(CouncilState)
 
-# 1. Add Nodes
-workflow.add_node("Chairman", chairman_node)
-workflow.add_node("Writer", writer_node)
-workflow.add_node("Architect", architect_node)
-workflow.add_node("Skeptic", skeptic_node)
-workflow.add_node("Exec", exec_node)
-workflow.add_node("Researcher", researcher_node)
-workflow.add_node("Coder", coder_node)
-workflow.add_node("AdHoc", adhoc_node)
+def route_after_planner(state):
+    return "worker" if state.get("plan") else "synthesizer"
 
-# 2. Add Edges
-# Entry point acts as the user input handling
-workflow.set_entry_point("Chairman")
 
-def route_chairman(state):
-    proposed_next = state['next_agent']
-    messages = state['messages']
-    
-    # Helper to see who spoke last
-    # We check the last message. If it doesn't have a name, assume it's the User.
-    last_msg = messages[-1]
-    last_agent = getattr(last_msg, 'name', 'User')
+def route_after_worker(state):
+    # Circuit breaker: never exceed the global step budget. Otherwise keep
+    # running waves while any step's dependencies are satisfied.
+    if state.get("steps_executed", 0) >= config.MAX_STEPS:
+        return "critic"
+    return "worker" if ready_steps(state) else "critic"
 
-    # Helper to count turns for circuit breaking
-    def count_turns(agent_name):
-        # 1. Etsi, missä kohtaa on käyttäjän VIIMEISIN viesti
-        # Käymme listaa lopusta alkuun
-        last_human_idx = 0
-        for i, msg in enumerate(reversed(messages)):
-            if isinstance(msg, HumanMessage):
-                # Koska lista on käännetty, lasketaan oikea indeksi
-                last_human_idx = len(messages) - 1 - i
-                break
-        
-        # 2. Rajaa tarkastelu vain uusiin viesteihin (nykyinen "kierros")
-        relevant_messages = messages[last_human_idx:]
-        
-        # 3. Laske osumat tästä rajatusta joukosta
-        count = sum(1 for m in relevant_messages if getattr(m, 'name', '') == agent_name)
-        
-        # (AdHoc-logiikka pysyy samana, mutta käyttää relevant_messages)
-        if agent_name == "AdHoc" and count == 0:
-             known_agents = {"Architect", "Writer", "Skeptic", "Exec", "Researcher", "Coder", "Chairman", "User"}
-             count = sum(1 for m in relevant_messages if getattr(m, 'name', '') not in known_agents)
-        
-        return count
 
-    # --- RULE 1: THE SANDWICH (Architect -> Skeptic) ---
-    # If the Architect just spoke, we ALWAYS force a critique.
-    # We do not trust the Chairman to route this; we hardcode the "Sandwich" logic.
-    if last_agent == "Architect":
-        # Exception: If Skeptic has already yelled too much, let it go to Exec to resolve.
-        if count_turns("Skeptic") > 2:
-            return "Exec"
-        print("--- ROUTING: Architect -> Skeptic (Mandatory Critique) ---")
-        return "Skeptic"
+def route_after_critic(state):
+    if state.get("critic_verdict") == "revise" and state.get("steps_executed", 0) < config.MAX_STEPS:
+        return "worker"
+    return "synthesizer"
 
-    # --- RULE 2: CIRCUIT BREAKERS & LOOP PREVENTION ---
-    
-    # If the Skeptic just spoke...
-    if last_agent == "Skeptic":
-        # If the Chairman (LLM) is confused and tries to send it BACK to Skeptic,
-        # we intervene and send it to Exec (or the Writer if you prefer) to break the loop.
-        if proposed_next == "Skeptic":
-            print("--- DETECTED STUTTER: Skeptic -> Skeptic. Forcing Exec. ---")
-            return "Exec"
-    
-    # Standard Circuit Breakers (Max 2 turns per agent)
-    # If an agent is proposed but has already spoken 2+ times, force Exec.
-    if proposed_next == "Skeptic" and count_turns("Skeptic") >= 2:
-        return "Exec"
-    
-    if proposed_next == "Writer" and count_turns("Writer") >= 2:
-        return "Exec"
-            
-    if proposed_next == "Architect" and count_turns("Architect") >= 2:
-        return "Exec"
 
-    if proposed_next == "Researcher" and count_turns("Researcher") >= 2:
-        return "Exec"
-    
-    if proposed_next == "AdHoc" and count_turns("AdHoc") >= 2:
-        return "Exec"
+def _make_checkpointer():
+    """A durable SQLite checkpointer when COUNCIL_DB_PATH is set, else in-memory.
 
-    # --- RULE 3: DEFAULT PATH ---
-    if proposed_next == "FINISH":
-        return END
-        
-    return proposed_next
+    Falls back to MemorySaver on any error so the app never fails to start.
+    """
+    if config.DB_PATH:
+        try:
+            import sqlite3
+            from langgraph.checkpoint.sqlite import SqliteSaver
+            conn = sqlite3.connect(config.DB_PATH, check_same_thread=False)
+            return SqliteSaver(conn)
+        except Exception as e:  # noqa: BLE001
+            print(f"[Council] Durable checkpointer unavailable ({e}); using in-memory.")
+    return MemorySaver()
 
-# Conditional logic based on Chairman's output
-workflow.add_conditional_edges(
-    "Chairman",
-    route_chairman,
-    {
-        "Architect": "Architect",
-        "Writer": "Writer",
-        "Skeptic": "Skeptic",
-        "Exec": "Exec",
-        "Researcher": "Researcher",
-        "Coder": "Coder",
-        "AdHoc": "AdHoc",
-        
-        END: END
-    }
-)
 
-# Workers always report back to the Chairman to decide the next step
-workflow.add_edge("Architect", "Chairman")
-workflow.add_edge("Writer", "Chairman")
-workflow.add_edge("Skeptic", "Chairman")
-workflow.add_edge("Exec", "Chairman")
-workflow.add_edge("Researcher", "Chairman")
-workflow.add_edge("Coder", "Chairman")
-workflow.add_edge("AdHoc", "Chairman")
+def build_graph(interrupt_after=None):
+    workflow = StateGraph(CouncilState)
 
-memory = MemorySaver()
-app = workflow.compile(checkpointer=memory)
+    workflow.add_node("planner", planner_node)
+    workflow.add_node("worker", worker_node)
+    workflow.add_node("critic", critic_node)
+    workflow.add_node("synthesizer", synthesizer_node)
+
+    workflow.set_entry_point("planner")
+
+    workflow.add_conditional_edges("planner", route_after_planner, {
+        "worker": "worker",
+        "synthesizer": "synthesizer",
+    })
+    workflow.add_conditional_edges("worker", route_after_worker, {
+        "worker": "worker",
+        "critic": "critic",
+    })
+    workflow.add_conditional_edges("critic", route_after_critic, {
+        "worker": "worker",
+        "synthesizer": "synthesizer",
+    })
+    workflow.add_edge("synthesizer", END)
+
+    return workflow.compile(
+        checkpointer=_make_checkpointer(),
+        interrupt_after=interrupt_after or [],
+    )
+
+
+# Default graph runs end-to-end. `app_review` pauses after planning so the user
+# can review/edit the plan (human-in-the-loop) before execution begins.
+app = build_graph()
+app_review = build_graph(interrupt_after=["planner"])

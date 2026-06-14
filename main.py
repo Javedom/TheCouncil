@@ -1,27 +1,50 @@
-import os
-from dotenv import load_dotenv
-load_dotenv() # Load GOOGLE_API_KEY immediately
+"""CLI runner for The Council.
 
-from langchain_core.messages import HumanMessage
+Streams the deliberation to the terminal so you can watch the phases, each
+member's reasoning and the final answer without the UI.
+
+Usage:
+    python main.py "your problem here"
+"""
+import sys
+
+from dotenv import load_dotenv
+load_dotenv()
+
+from langchain_core.messages import HumanMessage, AIMessage
+
+import config
 from graph import app
 
-def run_council(user_problem):
-    print(f"--- User Problem: {user_problem} ---\n")
-    
-    initial_state = {"messages": [HumanMessage(content=user_problem)]}
-    
-    # Stream the events to see the Council thinking
-    config = {"configurable": {"thread_id": "cli_test"}}
-    for event in app.stream(initial_state, config=config):
-        for key, value in event.items():
-            if key == "Chairman":
-                print(f"[Chairman]: Decided next step -> {value['next_agent']}")
-            else:
-                # Get the last message from the worker
-                last_msg = value['messages'][-1].content
-                print(f"\n[{key}]: {last_msg}") # Print full message
-                print("-" * 30)
+
+def run_council(problem: str):
+    print(f"\n{'='*70}\nPROBLEM: {problem}\n{'='*70}\n")
+
+    initial_state = {"messages": [HumanMessage(content=problem)], "problem": problem}
+    cfg = {
+        "configurable": {"thread_id": "cli"},
+        "recursion_limit": config.RECURSION_LIMIT,
+    }
+
+    for event in app.stream(initial_state, config=cfg, stream_mode="updates"):
+        for node_name, update in event.items():
+            if not isinstance(update, dict):
+                continue
+            for msg in update.get("messages", []) or []:
+                if not isinstance(msg, AIMessage):
+                    continue
+                meta = getattr(msg, "additional_kwargs", {}) or {}
+                role = meta.get("role", node_name)
+                phase = meta.get("phase", "")
+                reasoning = meta.get("reasoning", "")
+                print(f"\n{'-'*70}")
+                print(f"[{phase}] {role}")
+                if reasoning:
+                    print(f"  🧠 {reasoning}")
+                print(f"{'-'*70}")
+                print(msg.content)
+
 
 if __name__ == "__main__":
-    problem = "I want to you to write a poem that resembles The Howl by Allen Ginsberg."
+    problem = " ".join(sys.argv[1:]) or "Design a fair, abuse-resistant rate limiter for a public API."
     run_council(problem)
