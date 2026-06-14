@@ -43,7 +43,7 @@ The sidebar **⚙️ Settings** panel edits config live — no restart, no `.env
 - **Budgets** — max steps, plan steps, revisions, parallelism, recursion limit.
 - **Pricing** (💸) — editable USD/1M-token table that feeds the cost panel.
 
-Defaults track the current Gemini 3.x line (`gemini-3.1-pro`,
+Defaults track the current Gemini 3.x line (`gemini-3.1-pro-preview`,
 `gemini-3.5-flash`). Changes take effect on the next run because nodes read
 `config` at execution time. Saving applies process-wide (last save wins across
 sessions); `COUNCIL_DB_PATH` is the one setting bound at startup only.

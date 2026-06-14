@@ -16,7 +16,7 @@ def _env(name: str, default: str) -> str:
 # The Council runs on Google Gemini. "Pro" handles reasoning-heavy roles
 # (planning, critique, synthesis); "Flash" handles fast execution work.
 # Defaults track the current Gemini 3.x line; all are editable in the UI.
-PRO_MODEL = _env("COUNCIL_PRO_MODEL", "gemini-3.1-pro")
+PRO_MODEL = _env("COUNCIL_PRO_MODEL", "gemini-3.1-pro-preview")
 FLASH_MODEL = _env("COUNCIL_FLASH_MODEL", "gemini-3.5-flash")
 
 PLANNER_MODEL = _env("COUNCIL_PLANNER_MODEL", PRO_MODEL)
@@ -54,7 +54,7 @@ DB_PATH = _env("COUNCIL_DB_PATH", "")
 # Approximate USD per 1,000,000 tokens as (input, output). These are estimates
 # for the in-app cost panel only — editable in the UI or here.
 PRICING = {
-    "gemini-3.1-pro": (2.00, 12.00),
+    "gemini-3.1-pro-preview": (2.00, 12.00),
     "gemini-3.5-flash": (0.30, 2.50),
     "gemini-3.1-flash-lite": (0.10, 0.40),
     "gemini-3-flash-preview": (0.30, 2.50),
