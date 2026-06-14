@@ -70,8 +70,10 @@ def apply_settings():
         "RECURSION_LIMIT": int(s["recursion_limit"]),
         "PRICING": dict(st.session_state.pricing),
     })
-    if st.session_state.api_key:
-        set_api_key(st.session_state.api_key)
+    # Bind THIS session's key into the current context on every rerun — always,
+    # even when empty — so a cleared key takes effect and no key can persist
+    # from a prior run or leak between web visitors sharing the process.
+    set_api_key(st.session_state.api_key)
 
 st.set_page_config(page_title="The Council", page_icon="🏛️", layout="wide")
 
@@ -231,9 +233,10 @@ with st.sidebar:
         with st.form("settings_form", border=False):
             api_key = st.text_input(
                 "Gemini API key", value=st.session_state.api_key, type="password",
-                help="Kept in memory for this session only — never written to disk. "
-                     "Overrides GOOGLE_API_KEY for this process.",
-                placeholder="Set, or leave blank to use GOOGLE_API_KEY",
+                help="Your own key — used only for your session, kept in memory, never "
+                     "written to disk and never shared with other users. "
+                     "Get one free at aistudio.google.com/apikey.",
+                placeholder="Paste your Gemini API key",
             )
             tl_current = settings.get("thinking_level", "") or ""
             tl_choice = st.selectbox(
@@ -477,8 +480,8 @@ if st.session_state.pending:
 # --- Handle input -----------------------------------------------------------
 if prompt := st.chat_input("State your problem for The Council", disabled=bool(st.session_state.pending)):
     if not has_api_key():
-        st.error("No Gemini API key. Add one under **⚙️ Settings** in the sidebar "
-                 "(or set GOOGLE_API_KEY in your environment).")
+        st.error("No Gemini API key. Add your own key under **⚙️ Settings** in the "
+                 "sidebar to use The Council.")
         st.stop()
 
     st.session_state.last_error = None

@@ -1,0 +1,16 @@
+# Streamlit configuration for the deployed (Railway) web app.
+# The port and address are passed on the command line from the Procfile using
+# Railway's $PORT; everything below is safe for running behind Railway's proxy.
+[server]
+headless = true
+address = "0.0.0.0"
+# Behind a single-origin HTTPS proxy these defaults are correct; keep XSRF on.
+enableCORS = false
+enableXsrfProtection = false
+maxUploadSize = 25
+
+[browser]
+gatherUsageStats = false
+
+[theme]
+base = "dark"

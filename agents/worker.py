@@ -10,6 +10,7 @@ separately, and appends durable facts to the shared scratchpad. Steps that
 produce no model output are marked failed and flagged rather than letting an
 error string masquerade as a real contribution.
 """
+import contextvars
 from concurrent.futures import ThreadPoolExecutor
 from typing import List
 from pydantic import BaseModel, Field
@@ -139,9 +140,16 @@ def worker_node(state):
     if len(ready) == 1:
         results = [execute_step(ready[0], problem, transcript, scratch, documents)]
     else:
+        # Pool threads don't inherit context vars, so copy the current context
+        # (which carries this session's API key) once per step and run each step
+        # inside its own copy — keeping every parallel call on the right key.
+        contexts = [contextvars.copy_context() for _ in ready]
         with ThreadPoolExecutor(max_workers=min(config.MAX_PARALLEL, len(ready))) as pool:
             results = list(pool.map(
-                lambda s: execute_step(s, problem, transcript, scratch, documents), ready
+                lambda pair: pair[0].run(
+                    execute_step, pair[1], problem, transcript, scratch, documents
+                ),
+                zip(contexts, ready),
             ))
     results.sort(key=lambda r: r["step_id"])  # deterministic transcript order
 

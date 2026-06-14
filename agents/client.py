@@ -8,6 +8,7 @@ graph can keep flowing to a final answer.
 import os
 import time
 import threading
+import contextvars
 from typing import List, Optional, Type, TypeVar
 
 from google import genai
@@ -17,8 +18,19 @@ from pydantic import BaseModel
 
 import config
 
-_client = None
 T = TypeVar("T", bound=BaseModel)
+
+# --- Per-session API key isolation ------------------------------------------
+# The Gemini API key is held in a context-local variable, NOT a process global.
+# This is essential for the multi-user web deployment: each Streamlit session
+# (and each graph run inside it) sees only its own key, so one visitor can never
+# use — or be billed against — another visitor's key. The key is never written
+# to disk or to os.environ.
+_API_KEY: "contextvars.ContextVar[str]" = contextvars.ContextVar("council_api_key", default="")
+
+# Cache one genai.Client per distinct key so we don't rebuild it on every call.
+_clients: dict = {}
+_clients_lock = threading.Lock()
 
 # --- Usage / cost tracking --------------------------------------------------
 # A per-run log of model calls. The UI resets it before a run and reads the
@@ -80,28 +92,54 @@ def usage_summary() -> dict:
     }
 
 
+def _byok_only() -> bool:
+    """Whether to refuse any server-side env key (strict bring-your-own-key).
+
+    Set COUNCIL_BYOK_ONLY=1 in the deployment so each web visitor must supply
+    their own key and an accidental server GOOGLE_API_KEY is never used.
+    """
+    return os.environ.get("COUNCIL_BYOK_ONLY", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _resolve_key() -> str:
+    """The key for the current context: this session's key, else a server env
+    key (unless BYOK-only mode forbids it — e.g. on the public web deployment)."""
+    key = (_API_KEY.get() or "").strip()
+    if key:
+        return key
+    if _byok_only():
+        return ""
+    return (os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY") or "").strip()
+
+
 def get_client():
-    global _client
-    if _client is None:
-        api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
-        _client = genai.Client(api_key=api_key)
-    return _client
+    key = _resolve_key()
+    if not key:
+        raise RuntimeError(
+            "No Gemini API key for this session. Enter your own key in the sidebar settings."
+        )
+    with _clients_lock:
+        client = _clients.get(key)
+        if client is None:
+            # Bound cache: avoid unbounded growth from many distinct visitors.
+            if len(_clients) > 256:
+                _clients.clear()
+            client = genai.Client(api_key=key)
+            _clients[key] = client
+        return client
 
 
 def set_api_key(key: str):
-    """Set the Gemini API key at runtime and force the client to re-initialize.
+    """Bind the Gemini API key for the current execution context (this session).
 
-    The key is kept only in the process environment (never written to disk).
+    Stored only in a context-local variable — isolated per session/run, never
+    written to disk or os.environ, and never shared between web visitors.
     """
-    global _client
-    key = (key or "").strip()
-    if key:
-        os.environ["GOOGLE_API_KEY"] = key
-        _client = None  # drop any client built with the old/missing key
+    _API_KEY.set((key or "").strip())
 
 
 def has_api_key() -> bool:
-    return bool((os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY") or "").strip())
+    return bool(_resolve_key())
 
 
 # Relaxed safety so creative/security analysis tasks aren't spuriously blocked.

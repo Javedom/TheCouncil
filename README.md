@@ -33,8 +33,11 @@ planner ─▶ worker ─▶ (more steps?) ─▶ worker ...
 
 The sidebar **⚙️ Settings** panel edits config live — no restart, no `.env`:
 
-- **Gemini API key** — kept in memory for the session only (never written to
-  disk), applied to the process and overrides `GOOGLE_API_KEY`.
+- **Gemini API key** — each user supplies **their own** key. It is held only in
+  context-local, per-session memory (never written to disk, never placed in the
+  process environment, and never shared between users), so the app is safe to
+  host publicly. Locally, if you don't enter one it falls back to
+  `GOOGLE_API_KEY` (unless `COUNCIL_BYOK_ONLY=1`).
 - **Per-role models** (🎛️ Models) — set the model for each role independently
   (Planner, Critic, Synthesizer, reasoning/code worker, research/writing
   worker), or "Apply to all roles" at once.
@@ -135,6 +138,43 @@ The flow is built to **always terminate with an answer**:
    python main.py "Design a fair, abuse-resistant rate limiter for a public API."
    ```
 
+## Deploy to Railway (bring-your-own-key web app)
+
+The app ships ready to deploy on [Railway](https://railway.app) as a public,
+multi-user web app where **every visitor uses their own Gemini API key** — no
+server-side key, so you never pay for anyone else's usage.
+
+Included deploy files (in this `TheCouncil/` directory):
+
+| File | Purpose |
+|------|---------|
+| `Procfile` / `railway.json` | Start command + health check for Railway |
+| `.streamlit/config.toml` | Headless server config behind Railway's proxy |
+| `.python-version` | Pins the Python version for the Nixpacks build |
+
+Steps:
+
+1. Push this repo to GitHub.
+2. In Railway: **New Project → Deploy from GitHub repo** and pick it.
+3. If the repo root is the parent folder, set the service **Root Directory** to
+   `TheCouncil` (Settings → Source) so Railway sees `requirements.txt` and the
+   deploy files. Skip this if `TheCouncil/` *is* the repo root.
+4. Railway auto-detects Python (Nixpacks), installs `requirements.txt`, and runs
+   the start command from `railway.json`/`Procfile`. No environment variables
+   are required.
+5. Open the generated URL (Settings → Networking → **Generate Domain**), then
+   paste your own Gemini key into **⚙️ Settings** in the sidebar.
+
+**Strict bring-your-own-key:** the start command sets `COUNCIL_BYOK_ONLY=1`,
+which makes the app ignore any server `GOOGLE_API_KEY` so a user *must* provide
+their own key. Each session's key is isolated via a context-local variable (see
+`agents/client.py`), including across the worker's parallel threads.
+
+> Note: the durable SQLite checkpointer is **off** by default (Railway's
+> filesystem is ephemeral). Leave `COUNCIL_DB_PATH` unset to use in-memory
+> sessions. Model/budget/pricing settings are still process-wide (last save
+> wins across users); the per-user API key is the part that is fully isolated.
+
 ## Configuration
 
 Override any default via environment variables, e.g.:
@@ -145,4 +185,5 @@ export COUNCIL_FLASH_MODEL="gemini-2.5-flash"
 export COUNCIL_MAX_STEPS=12
 export COUNCIL_MAX_REVISIONS=2
 export COUNCIL_DB_PATH="council.db"   # durable, resumable sessions
+export COUNCIL_BYOK_ONLY=1            # ignore server keys; users must bring their own
 ```
